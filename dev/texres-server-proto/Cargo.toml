@@ -1,0 +1,17 @@
+[package]
+name = "texres-proto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tex-runtime = { path = "../texres-src/crates/tex-runtime" }
+tex-core = { path = "../texres-src/crates/tex-core" }
+tex-kpse = { path = "../texres-src/crates/tex-kpse" }
+libc = "0.2"
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

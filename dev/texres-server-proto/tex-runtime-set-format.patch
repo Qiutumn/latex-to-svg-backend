@@ -1,0 +1,34 @@
+diff --git a/crates/tex-runtime/src/lib.rs b/crates/tex-runtime/src/lib.rs
+index 5f4c18a..b8a727d 100644
+--- a/crates/tex-runtime/src/lib.rs
++++ b/crates/tex-runtime/src/lib.rs
+@@ -169,6 +169,8 @@ impl Compilation {
+ pub struct Session {
+     inputs: BTreeMap<String, Vec<u8>>,
+     epoch: Option<u64>,
++    /// A format to load in place of the embedded one (prototype).
++    format: Option<Vec<u8>>,
+ }
+ 
+ pub fn project_path(name: &str) -> Result<String, String> {
+@@ -204,6 +206,10 @@ impl Session {
+         self.inputs.insert(name, bytes.to_vec());
+         Ok(())
+     }
++    /// Load FORMAT, the bytes of a `.fmt' file, in place of the embedded format.
++    pub fn set_format(&mut self, format: Vec<u8>) {
++        self.format = Some(format);
++    }
+     pub fn remove_file(&mut self, name: &str) -> Result<(), String> {
+         self.inputs.remove(&project_path(name)?);
+         Ok(())
+@@ -471,7 +477,8 @@ impl Session {
+         output_dir: &Path,
+         job: &str,
+     ) -> PassOutcome {
+-        let mut engine = match tex_core::format::load_format_from(format_for_engine(selected_engine)) {
++        let format = self.format.as_deref().unwrap_or_else(|| format_for_engine(selected_engine));
++        let mut engine = match tex_core::format::load_format_from(format) {
+             Ok(engine) => engine,
+             Err(error) => {
+                 return PassOutcome::failed(Status::InternalError, format!("embedded LaTeX format: {error}"))

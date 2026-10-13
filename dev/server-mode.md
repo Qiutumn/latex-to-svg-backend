@@ -62,13 +62,70 @@ conversion too: render the page of the PDF bytes with Poppler onto a cairo
 SVG surface (the `poppler-rs` and `cairo-rs` crates). One equation is then a
 compile and a render in memory, with no process and no file.
 
-Open questions, for a prototype of a few dozen lines (compile 30 equations
-in one session, render each with Poppler, time both steps):
+### Prototype (2026-10-13)
 
-1. Does a `tex_session` keep the preamble loaded between compiles? If it
-   loads it again every time, much of texres's 59–73 ms stays.
-2. How much of `pdftocairo`'s 32–35 ms is starting the program rather than
-   rendering?
+The prototype is in `texres-server-proto/`: clone texres 0.7.7 (commit
+`a7ffa56`) as `texres-server-proto/../texres-src`, apply
+`tex-runtime-set-format.patch` to it, then `cargo build --release` (3 min).
+`texres-proto FILE.fmt` times the in-process variants, `texres-proto FILE.fmt
+fork` the forked one; `SPLIT=1` also prints TeX's run and the PDF writing of
+each equation. The corpus is that of markdown-ts-appear's benchmark, wrapped
+as the backend's `equation.tex` without its `%&` line. Poppler and cairo are
+called through their C functions, not through the Rust crates.
+
+What texres offers:
+
+- A `Session` keeps only its input files. Each compile loads texres's
+  built-in format again (`load_format_from(format_for_engine(...))` in
+  `run_pass`), and there is no way to give it the preamble's `.fmt`. The
+  patch adds `Session::set_format`.
+- `Engine` does not implement `Clone`, so a loaded engine cannot be copied.
+- `load_format_from` also takes an uncompressed format, so a server can
+  decompress the `.fmt` once (`zstd -d` does it). Building the engine from
+  the preamble's format takes 24.65 ms compressed and 16.55 ms uncompressed
+  (median of 10).
+
+The variants, per equation (round trip, median of 30), the format
+decompressed once:
+
+| Variant | Paper's preamble | Default preamble |
+|---|---:|---:|
+| Today: texres + `pdftocairo`, two programs | 98.15–108.52 ms | 80.58 ms |
+| One process, engine rebuilt per equation | 43.26 ms | — |
+| Fork from an engine built once | 31.44–36.51 ms | 19.43 ms |
+
+"Paper's preamble" is the default plus `physics`, `stmaryrd` (only
+`llbracket`, `rrbracket`), `siunitx` and `mathtools`. In the fork variant
+the parent builds the in-memory file system, typesets and renders one
+warm-up equation, and builds the engine; then it forks once per equation,
+and the child typesets, writes the PDF, converts it to SVG and sends it
+back through a pipe.
+
+Inside a forked child, with the paper's preamble:
+
+| Part | Time |
+|---|---:|
+| TeX's run (`\begin{document}`, fonts, the equation) | 23.61 ms |
+| Writing the PDF | 1.57 ms |
+| PDF → SVG with Poppler and cairo | 3.22–3.51 ms |
+| Fork, pipe and wait | about 3 ms |
+
+With the default preamble, TeX's run takes 12.57 ms: the packages add about
+11–14 ms to every equation, in today's program too.
+
+Conclusions:
+
+1. Poppler and cairo render the SVG in memory in 2.82–3.51 ms, against
+   31.55–34.50 ms for `pdftocairo`: about 90% of `pdftocairo`'s time is
+   starting it.
+2. A forked server typesets an equation 4.1 times as fast as today with the
+   default preamble, and about 3 times with the paper's.
+3. What remains is TeX's run, mostly `\begin{document}` and the fonts loaded
+   on first use, which the `.fmt` cannot hold. Running `\begin{document}`
+   once, before the fork, needs a way to stop TeX's main loop after it and
+   resume in the child: a change to texres's engine. Its gain is not known.
+4. A texres server stays at tens of milliseconds, against 1.43 ms for
+   MathJax and 0.245 ms for a RaTeX server.
 
 Licence: Poppler is GPL-2.0-or-later, so the server is GPL, which fits the
 GPL-3.0-or-later packages.
