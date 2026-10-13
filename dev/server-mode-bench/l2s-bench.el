@@ -109,21 +109,27 @@
       (clrhash latex-to-svg-backend--format-checked)
       (clrhash latex-to-svg-backend--format-blocklist))
     (when (eq engine 'mathjax) (l2s-bench--stop-mathjax))
-    ;; First formula after Emacs starts: MathJax starts Node.
+    ;; First formula after Emacs starts: MathJax starts Node.  Every row
+    ;; starts with Emacs's image cache empty, so no image is rasterized twice.
+    (clear-image-cache)
     (let ((first (l2s-bench--one (l2s-bench--formula 100))))
       (push (cons 'cold_first_ms (car first)) result)
       (push (cons 'cold_blocked_ms (cdr first)) result))
     ;; Warm: 20 new formulas one after the other, then the same 20 again.
     (let (new again)
+      (clear-image-cache)
       (dotimes (n 20) (push (car (l2s-bench--one (l2s-bench--formula (+ 200 n)))) new))
+      (clear-image-cache)
       (dotimes (n 20) (push (car (l2s-bench--one (l2s-bench--formula (+ 200 n)))) again))
       (push (cons 'new_formula_ms (l2s-bench--median new)) result)
       (push (cons 'repeat_formula_ms (l2s-bench--median again)) result))
     ;; Burst of 30 new formulas.
+    (clear-image-cache)
     (push (cons 'burst_30_new_ms (l2s-bench--burst 300)) result)
     ;; One new formula after more than 60 s of no math: MathJax has stopped
     ;; its process; the other engines have no process to stop.
     (when (eq engine 'mathjax) (l2s-bench--stop-mathjax))
+    (clear-image-cache)
     (push (cons 'new_after_idle_ms (car (l2s-bench--one (l2s-bench--formula 150))))
           result)
     ;; Emacs restarted, the same 30 formulas: the disk cache is all that is
@@ -132,6 +138,7 @@
           (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
           (l2s-bench--color "#000001"))
       (when (eq engine 'mathjax) (l2s-bench--stop-mathjax))
+      (clear-image-cache)
       (push (cons 'restart_30_same_ms (l2s-bench--burst 300)) result))
     (delete-directory latex-to-svg-backend-cache-directory t)
     (nreverse result)))
@@ -146,6 +153,19 @@
           (push (cons engine (l2s-bench-run engine)) runs))))
     (with-temp-file file (prin1 (nreverse runs) (current-buffer)))
     file))
+
+(defun l2s-bench-all-standard-preamble (engines rounds file)
+  "Run `l2s-bench-all' with the backend's standard preamble and nothing else.
+That is `standalone' with `amsmath', `amssymb' and `xcolor': no appended
+preamble, no preamble left out of the `.fmt', no RaTeX macros.  The run
+is in a temporary buffer, so no buffer-local value applies."
+  (with-temp-buffer
+    (let ((latex-to-svg-backend-preamble
+           (eval (car (get 'latex-to-svg-backend-preamble 'standard-value))))
+          (latex-to-svg-backend-appended-preamble "")
+          (latex-to-svg-backend-preamble-not-precompiled "")
+          (latex-to-svg-backend-ratex-macros ""))
+      (l2s-bench-all engines rounds file))))
 
 (provide 'l2s-bench)
 ;;; l2s-bench.el ends here
