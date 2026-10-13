@@ -36,7 +36,33 @@ Stages of one texres equation, with the preamble of a real paper and its
 each line as it arrives, without waiting for the end of its input. Measured
 from Python: 8.9 ms for the first formula, including the start of the
 program; then 30 new formulas in 9.46 ms in total, 0.245 ms each (median),
-1.168 ms at most. Not yet measured through Emacs's process filters.
+1.168 ms at most.
+
+Measured through Emacs (2026-10-13), with `server-mode-bench/`: the
+benchmark talks to two `render-svg --stdout` processes (inline and display)
+directly, not through the backend, makes each image with `create-image` and
+rasterizes it with `image-size`. Emacs's image cache is emptied before each
+run (`clear-image-cache`), so no image is rasterized twice. Medians of three
+rounds:
+
+| Scenario | RaTeX as a server | MathJax | RaTeX today |
+|---|---:|---:|---:|
+| First formula after start | 6.71 ms | 205.35 ms | 10.09 ms |
+| New formula | 1.43 ms | 2.32 ms | 7.63 ms |
+| 30 new formulas at once | 33.64 ms | 36.37 ms | 142.13 ms |
+| New formula after 60 s without math | 1.43 ms (it never stops) | 202.65 ms | 9.40 ms |
+
+The server beats MathJax in every row: narrowly on a new formula and on 30
+at once, widely wherever MathJax starts Node. Through Emacs a formula takes
+1.43 ms against 0.245 ms from Python: the rest is the process filter,
+`create-image` and rasterization, which MathJax pays too. The benchmark
+writes no SVG to the disk cache and handles no errors, which the backend
+would; both add some time.
+
+The table posted on markdown-ts-appear#7 used the same formulas in every
+round without emptying the image cache, so rounds 2 and 3 found images
+already rasterized. That flattered every engine about equally; MathJax's
+new formula, 1.43 ms there, is 2.32 ms here.
 
 What the backend needs:
 
