@@ -261,7 +261,8 @@ INPUTS does not hold."
               (latex-to-svg-backend--ratex-compile key latex inputs))
              ('texres
               (latex-to-svg-backend--texres-compile
-               key latex metadata inputs)))))))))
+               key latex metadata inputs)))))
+       engine))))
 
 ;;;; Failed compiles and the fallback engine
 
@@ -327,14 +328,19 @@ LATEX (see `latex-to-svg-backend--compile-failed').  INPUTS is the
 requesting buffer's plist of `latex-to-svg-backend--inputs', read when
 the request was made: the sentinel's current buffer is another.  LATEX
 is compiled with FALLBACK under FALLBACK's own cache key, along with
-METADATA, and WAITER's callback fires when that SVG is ready; the caller then
-re-queries and `latex-to-svg-backend' finds it.  When FALLBACK's SVG, or
-its failure record, is there already, the callback fires now."
-  (let ((fallback-key (latex-to-svg-backend--cache-key latex fallback inputs)))
+METADATA, and WAITER's callback is called when that compile ends (see
+`latex-to-svg-backend--call-back'): with nil when the SVG is ready, so
+the caller re-queries and `latex-to-svg-backend' finds it, and with
+FALLBACK's failure otherwise.  When FALLBACK's SVG, or its failure
+record, is there already, the callback is called now."
+  (let* ((fallback-key (latex-to-svg-backend--cache-key latex fallback inputs))
+         (callback (plist-get waiter :callback))
+         (failure (latex-to-svg-backend--recorded-failure fallback-key fallback)))
     (cond
-     ((or (file-exists-p (latex-to-svg-backend--svg-file fallback-key))
-          (latex-to-svg-backend--failed-p fallback-key))
-      (funcall (plist-get waiter :callback)))
+     ((file-exists-p (latex-to-svg-backend--svg-file fallback-key))
+      (latex-to-svg-backend--call-back callback nil))
+     (failure
+      (latex-to-svg-backend--call-back callback failure))
      (t (latex-to-svg-backend--enqueue
          fallback-key latex waiter metadata fallback inputs)))))
 
@@ -495,52 +501,63 @@ Call within the target buffer: the engines read their options there (see
   (when (and x-height (null color))
     (error "Missing :color: required with :x-height"))
   (latex-to-svg-backend--report-obsolete-options)
-  (if (not (latex-to-svg-backend-available-p))
-      (latex-to-svg-backend--report-no-svg)
-    (let* ((inputs (latex-to-svg-backend--inputs))
-           (key (latex-to-svg-backend--cache-key latex engine inputs))
-           (compiled (file-exists-p (latex-to-svg-backend--svg-file key)))
-           (image (and compiled
-                       (latex-to-svg-backend--cached-image
-                        key rescale-by color background padding x-height))))
-      (cond
-       ;; SVG on disk and an x-height: return the display image.
-       (image)
-       ;; Compiled, but no x-height (buffer shown nowhere): defer.
-       ;; The caller re-renders when the buffer is displayed.
-       (compiled nil)
-       ;; ENGINE rejected LATEX before: do not compile it again.
-       ((latex-to-svg-backend--failed-p key)
-        (cond
-         ((null fallback)
-          (unless quiet
-            (latex-to-svg-backend--report-failure
-             key latex engine (current-buffer)))
+  (let ((latex-to-svg-backend--in-request t))
+    (if (not (latex-to-svg-backend-available-p))
+        (progn
+          (latex-to-svg-backend--report-no-svg)
+          (latex-to-svg-backend--call-back
+           callback (latex-to-svg-backend--failure
+                     'setup engine
+                     :message latex-to-svg-backend--no-svg-message))
           nil)
-         (t
-          (let ((image (latex-to-svg-backend
-                        latex :callback callback :metadata metadata
-                        :engine fallback :quiet quiet
-                        :rescale-by rescale-by :color color
-                        :background background :padding padding
-                        :x-height x-height)))
-            (when image
-              (latex-to-svg-backend--note-fallback key engine fallback))
-            image))))
-       ;; Not compiled: ensure it is (eagerly, even with no size context),
-       ;; so it is ready when the buffer is later displayed; CALLBACK fires
-       ;; on completion so the caller re-queries and sizes it then.
-       (t (when callback
-            (latex-to-svg-backend--enqueue
-             key latex
-             (latex-to-svg-backend--waiter
-              callback quiet
-              (and fallback
-                   (lambda (waiter)
-                     (latex-to-svg-backend--fall-back
-                      latex fallback metadata waiter inputs))))
-             metadata engine inputs))
-          nil)))))
+      (let* ((inputs (latex-to-svg-backend--inputs))
+             (key (latex-to-svg-backend--cache-key latex engine inputs))
+             (compiled (file-exists-p (latex-to-svg-backend--svg-file key)))
+             (image (and compiled
+                         (latex-to-svg-backend--cached-image
+                          key rescale-by color background padding x-height)))
+             (failure (and (not compiled)
+                           (latex-to-svg-backend--recorded-failure key engine))))
+        (cond
+         ;; SVG on disk and an x-height: return the display image.
+         (image)
+         ;; Compiled, but no x-height (buffer shown nowhere): defer.
+         ;; The caller re-renders when the buffer is displayed.  Nothing
+         ;; is pending, so CALLBACK is not called.
+         (compiled nil)
+         ;; ENGINE rejected LATEX before: do not compile it again.
+         (failure
+          (cond
+           ((null fallback)
+            (unless quiet
+              (latex-to-svg-backend--report-failure
+               key latex engine (current-buffer)))
+            (latex-to-svg-backend--call-back callback failure)
+            nil)
+           (t
+            (let ((image (latex-to-svg-backend
+                          latex :callback callback :metadata metadata
+                          :engine fallback :quiet quiet
+                          :rescale-by rescale-by :color color
+                          :background background :padding padding
+                          :x-height x-height)))
+              (when image
+                (latex-to-svg-backend--note-fallback key engine fallback))
+              image))))
+         ;; Not compiled: ensure it is (eagerly, even with no size context),
+         ;; so it is ready when the buffer is later displayed; CALLBACK fires
+         ;; on completion so the caller re-queries and sizes it then.
+         (t (when callback
+              (latex-to-svg-backend--enqueue
+               key latex
+               (latex-to-svg-backend--waiter
+                callback quiet
+                (and fallback
+                     (lambda (waiter)
+                       (latex-to-svg-backend--fall-back
+                        latex fallback metadata waiter inputs))))
+               metadata engine inputs))
+            nil))))))
 
 ;;;###autoload
 (defun latex-to-svg-backend-invalidate (latex &optional engine)

@@ -731,16 +731,22 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
   ;; e.g. the buffer is shown nowhere): the entry point returns nil and does
   ;; NOT recompile — it defers to display time, when a real height exists.
   (let ((tmp (make-temp-file "l2s-defer" nil ".svg"))
-        (compiles 0))
+        (compiles 0)
+        (called nil))
     (unwind-protect
         (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) (lambda () t))
                   ((symbol-function 'latex-to-svg-backend--svg-file) (lambda (_k) tmp))
                   ((symbol-function 'latex-to-svg-backend--cached-image) (lambda (&rest _) nil))
                   ((symbol-function 'latex-to-svg-backend--compile)
-                   (lambda (&rest _) (cl-incf compiles))))
-          (should-not (latex-to-svg-backend "E=mc^2" :callback #'ignore))
-          ;; Compiled already -> no compile scheduled.
-          (should (= compiles 0)))
+                   (lambda (&rest _) (cl-incf compiles)))
+                  ((symbol-function 'run-at-time)
+                   (lambda (&rest _) (setq called t))))
+          (should-not (latex-to-svg-backend
+                       "E=mc^2" :callback (lambda (_) (setq called t))))
+          ;; Compiled already -> no compile scheduled, and nothing pending
+          ;; to call back about.
+          (should (= compiles 0))
+          (should-not called))
       (delete-file tmp))))
 
 ;;;; Direct process pipeline
@@ -859,9 +865,9 @@ completion event."
       (puthash
        key
        (list (latex-to-svg-backend--waiter
-              (lambda () (error "callback marker")))
+              (lambda (_outcome) (error "callback marker")))
              (latex-to-svg-backend--waiter
-              (lambda ()
+              (lambda (_outcome)
                 (cl-incf callbacks)
                 (setq metadata-seen (latex-to-svg-backend-metadata doc)))))
        latex-to-svg-backend--pending)
@@ -1037,7 +1043,7 @@ completion event."
       (puthash
        key
        (list (latex-to-svg-backend--waiter
-              (lambda ()
+              (lambda (_outcome)
                 (cl-incf callbacks)
                 (setq metadata-seen (latex-to-svg-backend-metadata doc)))))
        latex-to-svg-backend--pending)
@@ -1173,7 +1179,7 @@ completion event."
                          "\\begin{equation}\nx=1\n\\end{equation}"
                          "\\begin{align}\na&=b\\\\\nc&=d\n\\end{align}"))
             (let ((done 'pending))
-              (latex-to-svg-backend doc :callback (lambda () (setq done t)))
+              (latex-to-svg-backend doc :callback (lambda (outcome) (setq done (or outcome t))))
               (dotimes (_ 100)
                 (when (eq done 'pending)
                   (accept-process-output nil 0.1)))
@@ -1427,7 +1433,7 @@ kept for symmetry with the compile pipeline."
                               "\\typeout{L2S \\arabic{equation}}%\n"))
                  (done 'pending))
             ;; INITIAL = K+1 = 7 supplied in Elisp; FINAL = 7 from the compile.
-            (latex-to-svg-backend doc :callback (lambda () (setq done t)) :metadata 7)
+            (latex-to-svg-backend doc :callback (lambda (outcome) (setq done (or outcome t))) :metadata 7)
             (dotimes (_ 100)
               (when (eq done 'pending) (accept-process-output nil 0.1)))
             (should (eq done t))
@@ -1606,7 +1612,7 @@ kept for symmetry with the compile pipeline."
         (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) (lambda () t)))
           (let ((done 'pending)
                 (doc "\\begin{equation}\ne^{i\\pi}+1=0\n\\end{equation}"))
-            (latex-to-svg-backend doc :callback (lambda () (setq done t)))
+            (latex-to-svg-backend doc :callback (lambda (outcome) (setq done (or outcome t))))
             (dotimes (_ 200)
               (when (eq done 'pending) (accept-process-output nil 0.1)))
             (should (eq done t))
@@ -1990,7 +1996,7 @@ Return the SVG path."
            (key (latex-to-svg-backend--cache-key doc 'ratex))
            (callbacks 0))
       (latex-to-svg-backend--enqueue
-       key doc (latex-to-svg-backend--waiter (lambda () (cl-incf callbacks)))
+       key doc (latex-to-svg-backend--waiter (lambda (_outcome) (cl-incf callbacks)))
        3 'ratex)
       (should (= (length l2s-test-processes) 1))
       (let* ((process (car l2s-test-processes))
@@ -2030,17 +2036,18 @@ Return the SVG path."
 
 (ert-deftest latex-to-svg-backend-ratex-failure-saves-process-output ()
   ;; RaTeX rejects the formula: its message is kept in the log next to the
-  ;; SVG's place, a warning links to it, and the callbacks are dropped.  An
-  ;; exit 0 without an SVG root fails the same way.
+  ;; SVG's place, a warning links to it, and the callback gets the failure.
+  ;; An exit 0 without an SVG root fails the same way, but not because of
+  ;; the formula.
   (dolist (outcome '(parse-error no-root))
     (latex-to-svg-backend-tests--with-fake-processes
       (let* ((latex-to-svg-backend-ratex-program "ratex-direct")
              (latex-to-svg-backend-ratex-macros "")
              (doc (format "$\\SI{%s}{m}$" outcome))
              (key (latex-to-svg-backend--cache-key doc 'ratex))
-             (callbacks 0))
+             (outcomes nil))
         (latex-to-svg-backend--enqueue
-         key doc (latex-to-svg-backend--waiter (lambda () (cl-incf callbacks)))
+         key doc (latex-to-svg-backend--waiter (lambda (outcome) (push outcome outcomes)))
          nil 'ratex)
         (let* ((process (car l2s-test-processes))
                (scratch (aref process 4))
@@ -2053,7 +2060,15 @@ Return the SVG path."
             (with-temp-file (expand-file-name "0001.svg" scratch)
               (insert "garbage"))
             (latex-to-svg-backend-tests--finish-fake-process process 0))
-          (should (= callbacks 0))
+          (should (equal outcomes
+                         (list
+                          (if (eq outcome 'parse-error)
+                              (list :kind 'formula :engine 'ratex
+                                    :message "ParseError at position 0: Undefined control sequence: \\SI"
+                                    :line nil :column nil :log log :program nil)
+                            (list :kind 'setup :engine 'ratex
+                                  :message "The RaTeX engine wrote no SVG"
+                                  :line nil :column nil :log log :program nil)))))
           (should-not (file-exists-p (latex-to-svg-backend--svg-file key)))
           (should-not (gethash key latex-to-svg-backend--pending))
           (should-not (file-directory-p scratch))
@@ -2079,11 +2094,22 @@ A cached SVG is displayed as the symbol `image'."
   `(latex-to-svg-backend-tests--with-fake-processes
      (let ((latex-to-svg-backend-ratex-program "ratex-direct")
            (latex-to-svg-backend-ratex-macros "")
-           (latex-to-svg-backend--image-cache (make-hash-table :test 'equal)))
+           (latex-to-svg-backend--image-cache (make-hash-table :test 'equal))
+           (l2s-test-timers nil))
        (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) (lambda () t))
                  ((symbol-function 'latex-to-svg-backend--load-svg-image)
-                  (lambda (&rest _) 'image)))
+                  (lambda (&rest _) 'image))
+                 ((symbol-function 'run-at-time)
+                  (lambda (_time _repeat fn &rest args)
+                    (setq l2s-test-timers
+                          (nconc l2s-test-timers (list (cons fn args)))))))
          ,@body))))
+
+(defmacro latex-to-svg-backend-tests--run-timers ()
+  "Run the timers a test made, as the command loop would, oldest first."
+  `(while l2s-test-timers
+     (let ((timer (pop l2s-test-timers)))
+       (apply (car timer) (cdr timer)))))
 
 (defun latex-to-svg-backend-tests--fail-ratex (process)
   "Finish the fake RaTeX PROCESS as `render-svg' does on a parse error."
@@ -2110,12 +2136,12 @@ NEWEST is a function returning the most recently started fake process."
   (latex-to-svg-backend-tests--with-public-api
     (let* ((doc "$\\SI{3}{m}$")
            (key (latex-to-svg-backend--cache-key doc 'ratex))
-           (callbacks 0))
+           (outcomes nil))
       (should-not (latex-to-svg-backend doc :engine 'ratex :x-height 10
                                         :color "#000000"
-                                        :callback (lambda () (cl-incf callbacks))))
+                                        :callback (lambda (outcome) (push outcome outcomes))))
       (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
-      (should (= callbacks 0))
+      (should (equal (mapcar (lambda (o) (plist-get o :kind)) outcomes) '(formula)))
       (should (equal (with-temp-buffer
                        (insert-file-contents (latex-to-svg-backend--meta-file key))
                        (read (current-buffer)))
@@ -2124,9 +2150,15 @@ NEWEST is a function returning the most recently started fake process."
                                :line nil :column nil)))
       (should-not (latex-to-svg-backend-metadata doc 'ratex))
       (should (= 1 (length l2s-test-warnings)))
-      ;; Known failure: no compile, no second warning in this buffer.
+      ;; Known failure: no compile, no second warning in this buffer; the
+      ;; callback gets the recorded failure, after the request returned.
       (should-not (latex-to-svg-backend doc :engine 'ratex :x-height 10
-                                        :color "#000000" :callback #'ignore))
+                                        :color "#000000"
+                                        :callback (lambda (outcome) (push outcome outcomes))))
+      (should (= 1 (length outcomes)))
+      (latex-to-svg-backend-tests--run-timers)
+      (should (= 2 (length outcomes)))
+      (should (equal (car outcomes) (cadr outcomes)))
       (should (= 1 (length l2s-test-processes)))
       (should (= 1 (length l2s-test-warnings)))
       ;; The LaTeX engine's entry is another one.
@@ -2202,7 +2234,7 @@ NEWEST is a function returning the most recently started fake process."
                  (lambda (fmt &rest args) (push (apply #'format fmt args) messages))))
         (should-not (latex-to-svg-backend doc :engine 'ratex :fallback 'latex
                                           :x-height 10 :color "#000000"
-                                          :callback (lambda () (cl-incf callbacks))))
+                                          :callback (lambda (_outcome) (cl-incf callbacks))))
         (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
         (should (latex-to-svg-backend--failed-p ratex-key))
         ;; The same string, now compiled by LaTeX.
@@ -2450,6 +2482,173 @@ NEWEST is a function returning the most recently started fake process."
           (should (file-exists-p new-eld)))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
+;;;; The outcome of a request
+
+(defun latex-to-svg-backend-tests--fail-latex (process latex message line text)
+  "Finish the fake `latex' PROCESS on an error in LATEX.
+MESSAGE follows `! ' in the log, and TEXT follows `l.N ', N being
+LINE of LATEX counted in the source the compile wrote."
+  (let* ((tex (car (last (plist-get (aref process 3) :command))))
+         (lines (split-string (latex-to-svg-backend-tests--tex-source tex) "\n"))
+         (first (seq-position lines (car (split-string latex "\n")))))
+    (with-temp-file (expand-file-name "equation.log" (aref process 4))
+      (insert (format "! %s\nl.%d %s\n" message (+ first line) text)))
+    (latex-to-svg-backend-tests--finish-fake-process process 1)))
+
+(ert-deftest latex-to-svg-backend-callback-gets-nil-once-the-svg-is-cached ()
+  ;; The callback is called once, with nil; the caller asks again.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((outcomes nil))
+      (should-not (latex-to-svg-backend "$x$" :x-height 10 :color "#000000"
+                                        :callback (lambda (o) (push o outcomes))))
+      (latex-to-svg-backend-tests--succeed-latex
+       (car l2s-test-processes) (lambda () (car l2s-test-processes)))
+      (latex-to-svg-backend-tests--run-timers)
+      (should (equal outcomes '(nil)))
+      (should (eq 'image (latex-to-svg-backend "$x$" :x-height 10 :color "#000000"
+                                               :callback #'ignore))))))
+
+(ert-deftest latex-to-svg-backend-callback-gets-the-formula-error ()
+  ;; A LaTeX error in the formula: every waiter gets the failure, the
+  ;; quiet one too, which is not warned.  After a restart the recorded
+  ;; failure is the same plist, given after the request returned.
+  (latex-to-svg-backend-tests--with-public-api
+    (let* ((doc "$a +\n b + \\undefined$")
+           (key (latex-to-svg-backend--cache-key doc))
+           (loud nil)
+           (quiet nil)
+           (expected (list :kind 'formula :engine 'latex
+                           :message "Undefined control sequence."
+                           :line 2 :column 15
+                           :log (latex-to-svg-backend--log-file key)
+                           :program nil)))
+      (latex-to-svg-backend doc :callback (lambda (o) (push o loud)))
+      (latex-to-svg-backend doc :quiet t :callback (lambda (o) (push o quiet)))
+      (should (= 1 (length l2s-test-processes)))
+      (latex-to-svg-backend-tests--fail-latex
+       (car l2s-test-processes) doc "Undefined control sequence." 2
+       " b + \\undefined")
+      (should (equal loud (list expected)))
+      (should (equal quiet (list expected)))
+      (should (= 1 (length l2s-test-warnings)))
+      ;; As in a new session.
+      (setq loud nil)
+      (with-temp-buffer
+        (should-not (latex-to-svg-backend doc :quiet t
+                                          :callback (lambda (o) (push o loud))))
+        (should-not loud)
+        (latex-to-svg-backend-tests--run-timers)
+        (should (equal loud (list expected))))
+      (should (= 1 (length l2s-test-processes))))))
+
+(ert-deftest latex-to-svg-backend-callback-gets-a-setup-failure ()
+  ;; Not the formula's fault: a crash, or a program not found.  Nothing is
+  ;; recorded.  A program not found fails as the compile starts, inside
+  ;; the request, so the callback comes after the request returned.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((outcomes nil))
+      (latex-to-svg-backend "$a$" :engine 'ratex
+                            :callback (lambda (o) (push o outcomes)))
+      (latex-to-svg-backend-tests--finish-fake-process
+       (car l2s-test-processes) 134 "thread 'main' panicked\n")
+      (should (equal (seq-take (car outcomes) 6)
+                     '(:kind setup :engine ratex
+                             :message "The RaTeX engine failed: ratex exited with status 134")))
+      (should-not (latex-to-svg-backend--failed-p
+                   (latex-to-svg-backend--cache-key "$a$" 'ratex)))
+      (setq outcomes nil
+            l2s-test-missing '("ratex-direct"))
+      (should-not (latex-to-svg-backend "$b$" :engine 'ratex :quiet t
+                                        :callback (lambda (o) (push o outcomes))))
+      (should-not outcomes)
+      (latex-to-svg-backend-tests--run-timers)
+      (should (= 1 (length outcomes)))
+      (should (eq 'setup (plist-get (car outcomes) :kind)))
+      (should (equal "ratex-direct" (plist-get (car outcomes) :program)))
+      (should (equal (plist-get (car outcomes) :message)
+                     "The RaTeX engine could not run `ratex-direct': program not found.")))))
+
+(ert-deftest latex-to-svg-backend-callback-gets-the-fallbacks-outcome ()
+  ;; With a fallback, the failure the callback gets is the fallback's: the
+  ;; last engine that tried.  A later request finds both records and
+  ;; gets the fallback's from a timer.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((doc "$\\SI{3}{m}$")
+          (outcomes nil))
+      (latex-to-svg-backend doc :engine 'ratex :fallback 'latex
+                            :callback (lambda (o) (push o outcomes)))
+      (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
+      (should-not outcomes)
+      (latex-to-svg-backend-tests--fail-latex
+       (car l2s-test-processes) doc "Undefined control sequence." 1 "$\\SI")
+      (should (= 1 (length outcomes)))
+      (should (equal (seq-take (car outcomes) 10)
+                     '(:kind formula :engine latex
+                             :message "Undefined control sequence."
+                             :line 1 :column 4)))
+      (setq outcomes nil)
+      (should-not (latex-to-svg-backend doc :engine 'ratex :fallback 'latex
+                                        :callback (lambda (o) (push o outcomes))))
+      (latex-to-svg-backend-tests--run-timers)
+      (should (eq 'latex (plist-get (car outcomes) :engine)))
+      (should (= 2 (length l2s-test-processes))))))
+
+(ert-deftest latex-to-svg-backend-fall-back-answers-from-the-cache ()
+  ;; A fallback whose SVG or failure record is there already is not
+  ;; compiled: the callback gets nil, or the recorded failure.
+  (latex-to-svg-backend-tests--with-public-api
+    (let* ((outcomes nil)
+           (waiter (latex-to-svg-backend--waiter (lambda (o) (push o outcomes)))))
+      (with-temp-file (latex-to-svg-backend--svg-file
+                       (latex-to-svg-backend--cache-key "$x$" 'latex))
+        (insert "<svg/>"))
+      (latex-to-svg-backend--fall-back "$x$" 'latex nil waiter nil)
+      (latex-to-svg-backend--record-failure
+       (latex-to-svg-backend--cache-key "$y$" 'latex)
+       (latex-to-svg-backend--failure 'formula 'latex :message "Bad."))
+      (latex-to-svg-backend--fall-back "$y$" 'latex nil waiter nil)
+      (should (equal (mapcar (lambda (o) (plist-get o :message)) outcomes)
+                     '("Bad." nil)))
+      (should (equal (cadr outcomes) nil))
+      (should-not l2s-test-processes))))
+
+(ert-deftest latex-to-svg-backend-compile-that-cannot-start-tells-its-waiters ()
+  ;; A compile that signals as it starts gives a setup failure of its
+  ;; engine.
+  (let ((latex-to-svg-backend--pending (make-hash-table :test 'equal))
+        (latex-to-svg-backend--queue nil)
+        (latex-to-svg-backend--running nil)
+        (latex-to-svg-backend--warned (make-hash-table :test 'equal))
+        (outcomes nil))
+    (cl-letf (((symbol-function 'display-warning) #'ignore))
+      (puthash "a" (list (latex-to-svg-backend--waiter (lambda (o) (push o outcomes))))
+               latex-to-svg-backend--pending)
+      (latex-to-svg-backend--schedule
+       "a" (lambda () (error "No scratch directory")) 'texres)
+      (should (equal outcomes
+                     '((:kind setup :engine texres
+                              :message "The texres engine could not start a compile: No scratch directory"
+                              :line nil :column nil :log nil :program nil)))))))
+
+(ert-deftest latex-to-svg-backend-no-svg-support-is-a-setup-failure ()
+  ;; Without SVG support nothing compiles, and the callback gets the
+  ;; failure after the request returned.
+  (let ((latex-to-svg-backend--warned (make-hash-table :test 'equal))
+        (timers nil)
+        (outcomes nil))
+    (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) #'ignore)
+              ((symbol-function 'display-warning) #'ignore)
+              ((symbol-function 'run-at-time)
+               (lambda (_time _repeat fn &rest args) (push (cons fn args) timers))))
+      (should-not (latex-to-svg-backend "$x$" :engine 'ratex
+                                        :callback (lambda (o) (push o outcomes))))
+      (should-not outcomes)
+      (dolist (timer timers) (apply (car timer) (cdr timer)))
+      (should (equal outcomes
+                     (list (list :kind 'setup :engine 'ratex
+                                 :message latex-to-svg-backend--no-svg-message
+                                 :line nil :column nil :log nil :program nil)))))))
+
 ;;;; Where TeX stopped
 
 (defun latex-to-svg-backend-tests--formula-error (log latex offset)
@@ -2675,7 +2874,7 @@ and one in a formula's own black.")
       (cl-letf (((symbol-function 'latex-to-svg-backend--texres-link)
                  (lambda () link)))
         (latex-to-svg-backend--enqueue
-         key doc (latex-to-svg-backend--waiter (lambda () (cl-incf callbacks)))
+         key doc (latex-to-svg-backend--waiter (lambda (_outcome) (cl-incf callbacks)))
          nil 'texres)
         (let* ((tex-process (car l2s-test-processes))
                (scratch (aref tex-process 4))
@@ -2776,7 +2975,7 @@ and one in a formula's own black.")
                          "\\begin{align}\na&=b \\\\\nc&=d\n\\end{align}"))
             (let ((done 'pending))
               (latex-to-svg-backend doc :engine 'texres
-                                    :callback (lambda () (setq done t)))
+                                    :callback (lambda (outcome) (setq done (or outcome t))))
               (dotimes (_ 100)
                 (when (eq done 'pending)
                   (accept-process-output nil 0.1)))
@@ -2792,6 +2991,42 @@ and one in a formula's own black.")
                              latex-to-svg-backend--texres-ink-svg nil t))))))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
+;; Needs the programs of each engine it runs; an engine without them is
+;; left out.
+(ert-deftest latex-to-svg-backend-formula-error-end-to-end ()
+  ;; The real log gives the message, the line in LATEX and the column:
+  ;; `latex' prints the whole line, with the `.fmt' file loaded; texres
+  ;; cuts a long line short.
+  (let ((engines (seq-filter #'latex-to-svg-backend-tools-available-p
+                             '(latex texres))))
+    (skip-unless engines)
+    (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-error-e2e" t))
+          (latex-to-svg-backend-precompile t)
+          (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+          (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
+          (short "\\begin{equation}\nx = 1\n  + \\alsonot\n\\end{equation}")
+          (long (concat "$a_{11} + a_{12} + a_{13} + a_{14} + a_{15} + a_{16} + "
+                        "a_{17} + \\notacommand + b$")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) (lambda () t))
+                    ((symbol-function 'display-warning) #'ignore))
+            (dolist (engine engines)
+              (pcase-dolist (`(,doc ,line ,column)
+                             `((,short 3 12)
+                               (,long 1 ,(and (eq engine 'latex)
+                                              (- (length long) (length " + b$"))))))
+                (let ((done 'pending))
+                  (latex-to-svg-backend doc :engine engine :quiet t
+                                        :callback (lambda (outcome) (setq done outcome)))
+                  (dotimes (_ 100)
+                    (when (eq done 'pending)
+                      (accept-process-output nil 0.1)))
+                  (should (equal (seq-take done 10)
+                                 (list :kind 'formula :engine engine
+                                       :message "Undefined control sequence."
+                                       :line line :column column)))))))
+        (delete-directory latex-to-svg-backend-cache-directory t)))))
+
 (ert-deftest latex-to-svg-backend-ratex-compile-end-to-end ()
   ;; End to end (needs RaTeX's `render-svg'): inline, display and a numbered
   ;; environment render, with a macro from `-ratex-macros'.
@@ -2805,7 +3040,7 @@ and one in a formula's own black.")
                          "\\begin{align}\na&=b \\\\ % first\nc&=d\n\\end{align}"))
             (let ((done 'pending))
               (latex-to-svg-backend doc :engine 'ratex
-                                    :callback (lambda () (setq done t)))
+                                    :callback (lambda (outcome) (setq done (or outcome t))))
               (dotimes (_ 100)
                 (when (eq done 'pending)
                   (accept-process-output nil 0.1)))
@@ -2838,7 +3073,7 @@ and one in a formula's own black.")
               (dolist (doc '("$x$" "$y$" "\\[x=1\\]"))
                 (let ((done 'pending))
                   (latex-to-svg-backend doc :engine engine
-                                        :callback (lambda () (setq done t)))
+                                        :callback (lambda (outcome) (setq done (or outcome t))))
                   (dotimes (_ 200)
                     (when (eq done 'pending)
                       (accept-process-output nil 0.1)))
@@ -2874,7 +3109,7 @@ and one in a formula's own black.")
                   ((symbol-function 'display-warning)
                    (lambda (&rest w) (error "Unexpected warning: %S" w))))
           (latex-to-svg-backend doc :engine 'ratex :fallback 'latex
-                                :callback (lambda () (setq done t)))
+                                :callback (lambda (outcome) (setq done (or outcome t))))
           (dotimes (_ 200)
             (when (eq done 'pending)
               (accept-process-output nil 0.1)))
@@ -3018,7 +3253,7 @@ and one in a formula's own black.")
         (cl-letf (((symbol-function 'run-with-timer) #'ignore))
           (latex-to-svg-backend doc :engine 'ratex :fallback 'latex
                                 :x-height 10 :color "#000000"
-                                :callback (lambda () (cl-incf callbacks)))
+                                :callback (lambda (_outcome) (cl-incf callbacks)))
           (with-temp-buffer
             (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes)))
           (let ((latex (car l2s-test-processes)))
@@ -3063,7 +3298,7 @@ and one in a formula's own black.")
               (let ((latex-to-svg-backend-precompile precompile)
                     (done 'pending)
                     (doc (format "$\\RR \\QQ %s$" precompile)))
-                (latex-to-svg-backend doc :callback (lambda () (setq done t)))
+                (latex-to-svg-backend doc :callback (lambda (outcome) (setq done (or outcome t))))
                 (dotimes (_ 200)
                   (when (eq done 'pending) (accept-process-output nil 0.1)))
                 (should (eq done t))
@@ -3242,7 +3477,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
                      (lambda () t)))
             (let ((done 'pending)
                   (doc "$\\RR$"))
-              (latex-to-svg-backend doc :callback (lambda () (setq done t)))
+              (latex-to-svg-backend doc :callback (lambda (outcome) (setq done (or outcome t))))
               (dotimes (_ 200)
                 (when (eq done 'pending) (accept-process-output nil 0.1)))
               (should (eq done t))

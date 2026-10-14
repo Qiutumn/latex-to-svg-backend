@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** `:callback` takes one argument, OUTCOME, and the backend
+  calls it exactly once for every request that returned `nil`: with
+  `nil` when the SVG is in the cache, and the caller asks again, or with
+  a plist when the request ended without a picture: `(:kind KIND :engine
+  ENGINE :message MESSAGE :line LINE :column COLUMN :log LOG :program
+  PROGRAM)`. KIND is `formula` when the engine rejected the equation,
+  which is recorded, and `setup` for a missing program, a crash or an
+  Emacs without SVG support, which is not. LINE and COLUMN locate the
+  error in the LaTeX string the caller passed, or are nil. With
+  `:fallback`, the failure is the fallback's. Before, a failed compile,
+  a recorded failure and a missing program called no callback, so a
+  caller could not tell them from a compile in progress. A quiet
+  request gets the failure too. When the request finds a failure
+  record, or a failure ends it before it returns, the callback is
+  called from a timer. An equation compiled but requested with no
+  `:x-height` still calls nothing.
+
 - `latex` runs with `error_line=254`, `half_error_line=238` and
   `max_print_line=1000` in its environment, so the saved log of a
   failed compile shows the whole line TeX stopped on, instead of about

@@ -43,7 +43,9 @@
                           (error "MathJax failed: %S" (overlay-get ov 'mathjax-error)))
                       (kill-buffer buffer))))))
     (let ((source (l2s-bench--source formula)))
-      (cl-labels ((request ()
+      (cl-labels ((request (&optional failure)
+                    (when failure
+                      (error "Render failed: %S" failure))
                     (when-let* ((image
                                  (latex-to-svg-backend
                                   source :engine l2s-bench--engine :fallback nil

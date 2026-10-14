@@ -92,7 +92,8 @@ temporary cache directory."
                      (ok nil)
                      (start (float-time)))
                  (latex-to-svg-backend equation :engine engine
-                                       :callback (lambda () (setq ok t)))
+                                       :callback (lambda (outcome)
+                                                   (setq ok (null outcome))))
                  (latex-to-svg-backend-benchmark--wait
                   (lambda () (or ok (not (gethash key pending)))) 30)
                  (when ok
@@ -105,7 +106,9 @@ temporary cache directory."
                    (start (float-time)))
                (dolist (equation equations)
                  (latex-to-svg-backend equation :engine engine
-                                       :callback (lambda () (cl-incf done))))
+                                       :callback (lambda (outcome)
+                                                   (unless outcome
+                                                     (cl-incf done)))))
                (latex-to-svg-backend-benchmark--wait
                 (lambda () (seq-every-p (lambda (k) (not (gethash k pending))) keys))
                 120)

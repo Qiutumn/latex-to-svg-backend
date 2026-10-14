@@ -165,17 +165,25 @@ end.  A compile holds its place from its first process to its last:
 ;; `latex-to-svg-backend--compile-done', across all its processes and the
 ;; LaTeX engine's retry without a `.fmt' file.
 (defvar latex-to-svg-backend--queue nil
-  "Compiles waiting for a slot, oldest first, as (KEY . START) conses.
-START is a function of no arguments that starts the compile of KEY.")
+  "Compiles waiting for a slot, oldest first, as (KEY START ENGINE) lists.
+START is a function of no arguments that starts the compile of KEY by
+ENGINE.")
 
 (defvar latex-to-svg-backend--running nil
   "Content keys of the compiles holding a slot.")
+
+(defvar latex-to-svg-backend--in-request nil
+  "Non-nil while `latex-to-svg-backend' runs.
+A request can end before it returns, as when a program is not found,
+which fails as the compile starts.  `latex-to-svg-backend--call-back'
+then calls the callback from a timer.")
 
 (defun latex-to-svg-backend--waiter (callback &optional quiet fallback)
   "Return a waiter for CALLBACK, requested from the current buffer.
 A waiter is the plist (:callback CALLBACK :buffer BUFFER :quiet QUIET
 :fallback FALLBACK) queued in `latex-to-svg-backend--pending'.  CALLBACK
-is the caller's zero-argument function.  BUFFER is the requesting buffer,
+is the caller's function of one argument, the outcome (see
+`latex-to-svg-backend--call-back').  BUFFER is the requesting buffer,
 which a failure is reported in.  QUIET non-nil reports no compile failure
 for this request.  FALLBACK is nil or a function of one argument, the
 waiter, that takes the request over to the fallback engine when the
@@ -281,6 +289,10 @@ frame: whether to request a render, for a buffer shown only on a
 terminal say, is the front-end's decision."
   (image-type-available-p 'svg))
 
+(defconst latex-to-svg-backend--no-svg-message
+  "This Emacs cannot display SVG images: it was built without librsvg."
+  "What the warning and the failure say when SVG images cannot be shown.")
+
 (defun latex-to-svg-backend--report-no-svg ()
   "Warn that this Emacs cannot display SVG images, and return nil.
 Once per session (see `latex-to-svg-backend--mark-once'), even for a
@@ -288,8 +300,8 @@ quiet request: it is a configuration problem, not the formula's."
   (when (latex-to-svg-backend--mark-once "no SVG support")
     (display-warning
      'latex-to-svg-backend
-     "This Emacs cannot display SVG images: it was built without librsvg.
-Equations stay as LaTeX source."
+     (concat latex-to-svg-backend--no-svg-message
+             "\nEquations stay as LaTeX source.")
      :warning))
   nil)
 
@@ -999,12 +1011,12 @@ status 127; only then is the file checked."
   "Return how many compiles may run at once (see `latex-to-svg-backend-jobs')."
   (max 1 (or latex-to-svg-backend-jobs (num-processors))))
 
-(defun latex-to-svg-backend--schedule (key start)
-  "Start the compile of KEY by calling START once a slot is free.
+(defun latex-to-svg-backend--schedule (key start &optional engine)
+  "Start the compile of KEY by ENGINE by calling START once a slot is free.
 START is a function of no arguments.  Compiles start in the order they
-were scheduled."
+were scheduled.  ENGINE is as for `latex-to-svg-backend--failure'."
   (setq latex-to-svg-backend--queue
-        (nconc latex-to-svg-backend--queue (list (cons key start))))
+        (nconc latex-to-svg-backend--queue (list (list key start engine))))
   (latex-to-svg-backend--fill-slots))
 
 (defun latex-to-svg-backend--fill-slots ()
@@ -1012,21 +1024,30 @@ were scheduled."
   (while (and latex-to-svg-backend--queue
               (< (length latex-to-svg-backend--running)
                  (latex-to-svg-backend--jobs)))
-    (pcase-let ((`(,key . ,start) (pop latex-to-svg-backend--queue)))
+    (pcase-let ((`(,key ,start ,engine) (pop latex-to-svg-backend--queue)))
       (push key latex-to-svg-backend--running)
-      (latex-to-svg-backend--start-compile key start))))
+      (latex-to-svg-backend--start-compile key start engine))))
 
-(defun latex-to-svg-backend--start-compile (key start)
+(defun latex-to-svg-backend--start-compile (key start &optional engine)
   "Call START, which starts the compile of KEY in the slot KEY holds.
 A compile that cannot start (its scratch directory cannot be created,
 say) is reported once per session and ended (see
 `latex-to-svg-backend--compile-done'), so its slot is freed and the next
-request for KEY compiles again.  It is reported, not signaled: START
-often runs from the sentinel of the compile that freed the slot."
+request for KEY compiles again.  Its waiters get a `setup' failure of
+ENGINE (see `latex-to-svg-backend--failure').  It is reported, not
+signaled: START often runs from the sentinel of the compile that freed
+the slot."
   (condition-case err
       (funcall start)
     (error
      (latex-to-svg-backend--warn-once "starting a compile" err)
+     (let ((failure (latex-to-svg-backend--failure
+                     'setup engine
+                     :message (format "The %s engine could not start a compile: %s"
+                                      (latex-to-svg-backend--engine-name engine)
+                                      (error-message-string err)))))
+       (dolist (waiter (gethash key latex-to-svg-backend--pending))
+         (latex-to-svg-backend--call-back (plist-get waiter :callback) failure)))
      (latex-to-svg-backend--compile-done key))))
 
 ;;;; Compile outcome
@@ -1038,15 +1059,30 @@ often runs from the sentinel of the compile that freed the slot."
     ('ratex "RaTeX")
     ('texres "texres")))
 
+(defun latex-to-svg-backend--call-back (callback outcome)
+  "Call CALLBACK with OUTCOME, which ends the request CALLBACK was given to.
+OUTCOME is nil when the SVG is in the cache, and the request is to be
+made again; otherwise it is the plist of `latex-to-svg-backend--failure'.
+Nothing happens when CALLBACK is nil.  A callback that signals is
+reported and does not keep the others from running.
+
+While `latex-to-svg-backend' runs (`latex-to-svg-backend--in-request'),
+CALLBACK is called from a timer, so it never runs before the request
+returns."
+  (when callback
+    (if latex-to-svg-backend--in-request
+        (run-at-time 0 nil #'latex-to-svg-backend--call-back callback outcome)
+      (condition-case cb-err
+          (funcall callback outcome)
+        (error
+         (message "latex-to-svg-backend: callback error: %S" cb-err))))))
+
 (defun latex-to-svg-backend--notify-pending (key)
   "Call every callback queued for KEY (see `latex-to-svg-backend--enqueue').
-Called once KEY's SVG is in the cache.  A callback that signals is
-reported and does not keep the others from running."
+Called once KEY's SVG is in the cache, so the outcome is nil (see
+`latex-to-svg-backend--call-back')."
   (dolist (waiter (gethash key latex-to-svg-backend--pending))
-    (condition-case cb-err
-        (funcall (plist-get waiter :callback))
-      (error
-       (message "latex-to-svg-backend: callback error: %S" cb-err)))))
+    (latex-to-svg-backend--call-back (plist-get waiter :callback) nil)))
 
 (defun latex-to-svg-backend--compile-done (key)
   "End KEY's compile: forget its waiters and free its slot.
@@ -1101,11 +1137,31 @@ again, and an equation compiles as soon as PROGRAM is installed."
            (format "program not found/%s/%s" engine program))
       (display-warning
        'latex-to-svg-backend
-       (format "The %s engine could not run `%s': program not found.
+       (format "%s
 Install it, or set where it is with \
 M-x customize-group RET latex-to-svg-backend-%s."
-               (latex-to-svg-backend--engine-name engine) program engine)
+               (latex-to-svg-backend--missing-program-message engine program)
+               engine)
        :warning))))
+
+(defun latex-to-svg-backend--missing-program-message (engine program)
+  "Return the line that says ENGINE could not run PROGRAM.
+It starts the warning of `latex-to-svg-backend--report-missing-program'
+and is the message of the failure."
+  (format "The %s engine could not run `%s': program not found."
+          (latex-to-svg-backend--engine-name engine) program))
+
+(defun latex-to-svg-backend--setup-message (engine exit)
+  "Return the message of a failure of ENGINE that is not the formula's.
+EXIT is as for `latex-to-svg-backend--compile-failed': (STAGE .
+EXIT-STATUS) when a stage exited with a status other than 0, nil when
+one was killed, or exited with no output, or the SVG could not be
+stored."
+  (if (numberp (cdr exit))
+      (format "The %s engine failed: %s exited with status %d"
+              (latex-to-svg-backend--engine-name engine) (car exit) (cdr exit))
+    (format "The %s engine wrote no SVG"
+            (latex-to-svg-backend--engine-name engine))))
 
 (cl-defun latex-to-svg-backend--failure
     (kind engine &key message line column key program)
@@ -1186,6 +1242,11 @@ buffer, linking to the log (see `latex-to-svg-backend--report-failure').
 A buffer killed before the compile ended is skipped; when no requesting
 buffer is left, the warning is once per session.
 
+Every waiter that is not handed to its fallback, quiet or not, has its
+callback called with the failure (see `latex-to-svg-backend--call-back'):
+of kind `formula' with FAULT, of kind `setup' otherwise, with the
+program that was not found, if any.
+
 The log is copied byte-for-byte (`raw-text' in and out): a TeX log
 echoing an unencodable Unicode character would otherwise make
 `write-region' prompt for a coding system from a background compile."
@@ -1208,28 +1269,51 @@ echoing an unencodable Unicode character would otherwise make
             (when have-tex-log
               (insert "\n--- process output ---\n"))
             (insert process-output)))))
-    (if (stringp (cdr exit))
-        (latex-to-svg-backend--report-missing-program engine (cdr exit))
-      (when fault
-        (latex-to-svg-backend--record-failure
-         key (apply #'latex-to-svg-backend--failure 'formula engine
-                    :key key fault)))
+    (let* ((missing (and (stringp (cdr exit)) (cdr exit)))
+           (fault (and (not missing) fault))
+           (outcome
+            (cond
+             (missing
+              (latex-to-svg-backend--failure
+               'setup engine
+               :message (latex-to-svg-backend--missing-program-message
+                         engine missing)
+               :key key :program missing))
+             (fault
+              (apply #'latex-to-svg-backend--failure 'formula engine
+                     :key key fault))
+             (t
+              (latex-to-svg-backend--failure
+               'setup engine
+               :message (latex-to-svg-backend--setup-message engine exit)
+               :key key)))))
+      (if missing
+          (latex-to-svg-backend--report-missing-program engine missing)
+        (when fault
+          (latex-to-svg-backend--record-failure key outcome)))
       (dolist (waiter (gethash key latex-to-svg-backend--pending))
         (let ((fallback (plist-get waiter :fallback))
               (buffer (plist-get waiter :buffer)))
           (cond
            ((and fault fallback)
             ;; The fallback's own waiter has none, so a failure there is
-            ;; reported instead of falling back again.
+            ;; reported instead of falling back again.  Its callback is
+            ;; called when the fallback ends.
             (condition-case fb-err
                 (funcall fallback (plist-put (copy-sequence waiter) :fallback nil))
               (error
-               (message "latex-to-svg-backend: fallback error: %S" fb-err))))
-           ((plist-get waiter :quiet))
-           ((buffer-live-p buffer)
-            (latex-to-svg-backend--report-failure key latex engine buffer)
-            (setq reported t))
-           (t (setq orphaned t)))))
+               (message "latex-to-svg-backend: fallback error: %S" fb-err)
+               (latex-to-svg-backend--call-back
+                (plist-get waiter :callback) outcome))))
+           (t
+            (cond
+             ((or missing (plist-get waiter :quiet)))
+             ((buffer-live-p buffer)
+              (latex-to-svg-backend--report-failure key latex engine buffer)
+              (setq reported t))
+             (t (setq orphaned t)))
+            (latex-to-svg-backend--call-back
+             (plist-get waiter :callback) outcome)))))
       (when (and orphaned (not reported))
         (latex-to-svg-backend--report-failure key latex engine)))))
 

@@ -909,7 +909,8 @@ A theme change therefore re-tints from cache without recompiling."
            (latex-to-svg-backend--start-compile
             key (lambda ()
                   (latex-to-svg-backend--compile
-                   key latex metadata inputs t toolchain)))))))))
+                   key latex metadata inputs t toolchain))
+            (plist-get toolchain :engine))))))))
 
 (provide 'latex-to-svg-backend-latex)
 
