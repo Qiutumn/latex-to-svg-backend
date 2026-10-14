@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `latex` runs with `error_line=254`, `half_error_line=238` and
+  `max_print_line=1000` in its environment, so the saved log of a
+  failed compile shows the whole line TeX stopped on, instead of about
+  50 characters of it. The backend reads the error's message, line and
+  column from that log. texres ignores these settings, so for a long
+  line its column is unknown.
+
 ## [0.14.0] - 2026-10-11
 
 The backend reads no faces and no frames. A front-end passes the tint and

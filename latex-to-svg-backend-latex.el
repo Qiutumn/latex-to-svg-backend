@@ -615,20 +615,68 @@ Called on a successful compile, before DIR is cleaned up."
           (file-error
            (latex-to-svg-backend--warn-once "writing compile metadata" err)))))))
 
-(defun latex-to-svg-backend--latex-formula-error-p (dir)
-  "Return non-nil when the log in scratch DIR shows LaTeX rejected the input.
-That is a `! ' error line in `equation.log', such as \"! Undefined control
-sequence.\" or \"! LaTeX Error: File `siunitx.sty' not found.\": compiling
-the same document again fails the same way.  \"! I can't write on file\"
-is a disk problem, not the input's, and does not count."
+(defconst latex-to-svg-backend--latex-environment
+  '("error_line=254" "half_error_line=238" "max_print_line=1000")
+  "Environment variables for the TeX program of a compile.
+TeX Live's `latex' reads them from the environment.  They let the log
+show the whole line of an error, which is cut to about 50 characters
+otherwise, so `latex-to-svg-backend--latex-formula-error' finds its
+column.  They change only the log's formatting, so they are not part of
+the cache key.  texres ignores them.")
+
+(defun latex-to-svg-backend--latex-formula-error (dir latex offset)
+  "Return the error LaTeX stopped on in the input, as a plist, or nil.
+Nil when the log in scratch DIR shows no rejected input.  The input is
+rejected when `equation.log' has a `! ' error line, such as \"! Undefined
+control sequence.\" or \"! LaTeX Error: File `siunitx.sty' not found.\":
+compiling the same document again fails the same way.  \"! I can't
+write on file\" is a disk problem, not the input's, and does not count.
+
+The plist is (:message MESSAGE :line LINE :column COLUMN).  MESSAGE is
+the text after `! ', with the indented lines LaTeX breaks a long message
+onto joined to it.  LINE is the 1-based line in LATEX of the `l.N' line
+TeX prints after the error, where OFFSET is the number of lines
+`equation.tex' holds before LATEX; nil when TeX names no line, or one
+outside LATEX (`Missing $ inserted' at `\\end{document}', say).  COLUMN
+is the 0-based column in that line where TeX stopped: TeX splits the
+line there, and prints the text before it after `l.N '.  Nil when TeX
+cut that text short, starting it with `...' (see
+`latex-to-svg-backend--latex-environment').  pdfTeX prints the bytes of
+a non-ASCII character, so the text is decoded as UTF-8 before it is
+counted."
   (let ((log (expand-file-name "equation.log" dir)))
-    (and (file-readable-p log)
-         (with-temp-buffer
-           (let ((coding-system-for-read 'raw-text))
-             (insert-file-contents log))
-           (goto-char (point-min))
-           (and (re-search-forward "^! " nil t)
-                (not (looking-at-p "I can't write on file")))))))
+    (when (file-readable-p log)
+      (with-temp-buffer
+        (let ((coding-system-for-read 'raw-text))
+          (insert-file-contents log))
+        (goto-char (point-min))
+        (when (and (re-search-forward "^! \\(.*\\)$" nil t)
+                   (not (string-prefix-p "I can't write on file"
+                                         (match-string 1))))
+          (let ((message (match-string 1))
+                ;; With `-halt-on-error' the next `! ' line is TeX's
+                ;; "==> Fatal error occurred".
+                (end (save-excursion
+                       (if (re-search-forward "^! " nil t)
+                           (match-beginning 0)
+                         (point-max))))
+                (line nil)
+                (column nil))
+            (forward-line 1)
+            (while (looking-at "[ \t]+\\([^ \t\n].*\\)$")
+              (setq message (concat message " " (match-string 1)))
+              (forward-line 1))
+            (when (re-search-forward "^l\\.\\([0-9]+\\) \\(.*\\)$" end t)
+              (let ((n (- (string-to-number (match-string 1)) offset))
+                    (before (match-string 2)))
+                (when (<= 1 n (1+ (seq-count (lambda (c) (eq c ?\n)) latex)))
+                  (setq line n
+                        column (unless (string-prefix-p "..." before)
+                                 (length (decode-coding-string
+                                          before 'utf-8)))))))
+            (list :message (string-trim (decode-coding-string message 'utf-8))
+                  :line line
+                  :column column)))))))
 
 (defconst latex-to-svg-backend--latex-baseline-mark
   (concat "\\ifhmode\\ifnum\\prevgraf=0 \\special{dvisvgm:raw "
@@ -738,7 +786,7 @@ a `.fmt' file was loaded it may be the culprit: it is abandoned (see
 the full inline preamble.  Only when a full-preamble compile fails is
 the failure handled (see `latex-to-svg-backend--compile-failed'): the log
 is saved, and when the TeX program stopped on an error in the document
-\(see `latex-to-svg-backend--latex-formula-error-p') the failure is
+\(see `latex-to-svg-backend--latex-formula-error') the failure is
 recorded.  NO-FORMAT forces that inline path (it is set on the retry).
 
 No color is baked in: the equation's default ink becomes the literal
@@ -759,17 +807,23 @@ A theme change therefore re-tints from cache without recompiling."
          (format-file (and (not no-format)
                            (latex-to-svg-backend--ensure-format
                             preamble (plist-get toolchain :program))))
-         (body (concat "\\begin{document}\n"
-                       (plist-get toolchain :prefix)
-                       ;; LATEX is inserted verbatim: it already carries
-                       ;; its own math delimiters / environment (chosen by
-                       ;; the front-end), which also decide inline vs
-                       ;; display sizing.
-                       ;; A newline first, so that a `%' comment at the end
-                       ;; of LATEX does not hide the suffix.
-                       latex "\n"
-                       (or (plist-get toolchain :suffix) "")
-                       "\\end{document}\n"))
+         ;; Everything before LATEX.  Its lines are counted, so that an
+         ;; error's line in `equation.tex' becomes a line in LATEX.
+         (head (concat (if format-file
+                           ;; Load the precompiled preamble: the `%&' line
+                           ;; must be first, and names the `.fmt' file by
+                           ;; absolute path without its `.fmt' extension.
+                           ;; The class + packages are already in the
+                           ;; `.fmt' file, so they are not written here.
+                           (concat "%& " (file-name-sans-extension format-file)
+                                   "\n")
+                         (concat preamble "\n"))
+                       (if (string-empty-p not-precompiled)
+                           ""
+                         (concat not-precompiled "\n"))
+                       "\\begin{document}\n"
+                       (plist-get toolchain :prefix)))
+         (offset (seq-count (lambda (c) (eq c ?\n)) head))
          (cleanup (lambda () (delete-directory dir t)))
          (output-buffer (generate-new-buffer
                          (format " *latex-to-svg-backend-%s*" key))))
@@ -785,18 +839,15 @@ A theme change therefore re-tints from cache without recompiling."
     ;; (`--compile-failed'), but this file carries the user's own math.
     (let ((coding-system-for-write 'utf-8-unix))
       (with-temp-file tex
-        (insert (if format-file
-                    ;; Load the precompiled preamble: the `%&' line must be
-                    ;; first, and names the `.fmt' file by absolute path
-                    ;; without its `.fmt' extension.  The class + packages
-                    ;; are already in the `.fmt' file, so they are not
-                    ;; written here.
-                    (concat "%& " (file-name-sans-extension format-file) "\n")
-                  (concat preamble "\n"))
-                (if (string-empty-p not-precompiled)
-                    ""
-                  (concat not-precompiled "\n"))
-                body)))
+        (insert head
+                ;; LATEX is inserted verbatim: it already carries its own
+                ;; math delimiters / environment (chosen by the
+                ;; front-end), which also decide inline vs display sizing.
+                ;; A newline after it, so that a `%' comment at the end of
+                ;; LATEX does not hide the suffix.
+                latex "\n"
+                (or (plist-get toolchain :suffix) "")
+                "\\end{document}\n")))
     (latex-to-svg-backend--run-process-chain
      dir output-buffer
      (cons (list 'latex
@@ -804,7 +855,8 @@ A theme change therefore re-tints from cache without recompiling."
                        "-interaction=nonstopmode"
                        "-halt-on-error"
                        tex)
-                 output)
+                 output
+                 latex-to-svg-backend--latex-environment)
            (funcall (plist-get toolchain :convert) dir output svg))
      (lambda (success &optional exit)
        (let* ((stored
@@ -844,7 +896,8 @@ A theme change therefore re-tints from cache without recompiling."
                 (latex-to-svg-backend--process-output output-buffer)
                 (plist-get toolchain :engine)
                 (and (eq (car exit) 'latex)
-                     (latex-to-svg-backend--latex-formula-error-p dir))
+                     (latex-to-svg-backend--latex-formula-error
+                      dir latex offset))
                 exit)))
            (unless retry-format
              (latex-to-svg-backend--compile-done key))

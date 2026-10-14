@@ -818,7 +818,8 @@ completion event."
                              (list "Searching for program"
                                    "No such file or directory" program))))
                  (let ((process
-                        (vector 'fake-process 'run 0 plist default-directory)))
+                        (vector 'fake-process 'run 0 plist default-directory
+                                process-environment)))
                    (push process l2s-test-processes)
                    process)))
               ((symbol-function 'process-status)
@@ -2446,6 +2447,121 @@ NEWEST is a function returning the most recently started fake process."
           (should-not (file-exists-p only-log))
           (should (file-exists-p new-eld)))
       (delete-directory latex-to-svg-backend-cache-directory t))))
+
+;;;; Where TeX stopped
+
+(defun latex-to-svg-backend-tests--formula-error (log latex offset)
+  "Return what the LaTeX engine reads from LOG, written as UTF-8.
+LATEX and OFFSET are as for `latex-to-svg-backend--latex-formula-error'."
+  (let ((dir (make-temp-file "l2s-tex-log" t)))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8-unix))
+            (write-region log nil (expand-file-name "equation.log" dir)))
+          (latex-to-svg-backend--latex-formula-error dir latex offset))
+      (delete-directory dir t))))
+
+(ert-deftest latex-to-svg-backend-latex-formula-error-reads-the-log ()
+  ;; Log excerpts from TeX Live 2026's `latex' and texres 0.7.7.  The line
+  ;; counts in LATEX; the column is where TeX split the `l.N' line,
+  ;; counted in characters; nil when TeX cut the line short or named no
+  ;; line in LATEX.
+  (let* ((long "$a_{11} + a_{12} + a_{13} + a_{14} + a_{15} + a_{16} + \\notacommand + b_1$")
+         (stop (- (length long) (length " + b_1$"))))
+    (pcase-dolist (`(,log ,latex ,offset ,expected)
+                   `(;; With `latex-to-svg-backend--latex-environment'.
+                     (,(concat "! Undefined control sequence.\n"
+                               "l.6 " (substring long 0 stop) "\n"
+                               (make-string (+ 4 stop) ?\s) " + b_1$\n"
+                               "The control sequence at the end of the top line\n")
+                      ,long 5
+                      (:message "Undefined control sequence." :line 1 :column ,stop))
+                     ;; Without it, or from texres: the line is cut short.
+                     (,(concat "! Undefined control sequence.\n"
+                               "l.6 ...} + a_{14} + a_{15} + a_{16} + \\notacommand\n"
+                               "                                                   + b_1$\n")
+                      ,long 5
+                      (:message "Undefined control sequence." :line 1 :column nil))
+                     ;; pdfTeX prints the bytes of a non-ASCII character.
+                     ("! Undefined control sequence.\nl.4 $\\text{é} + \\notacommand\n   $\n"
+                      "$\\text{é} + \\notacommand$" 3
+                      (:message "Undefined control sequence." :line 1 :column 24))
+                     ;; The second line of LATEX.
+                     ("! Undefined control sequence.\nl.5 a = \\undefined\n\n"
+                      "\\begin{equation}\na = \\undefined\n\\end{equation}" 3
+                      (:message "Undefined control sequence." :line 2 :column 14))
+                     ;; LaTeX breaks a long message onto indented lines.
+                     (,(concat "! LaTeX Error: Unicode character α (U+03B1)\n"
+                               "               not set up for use with LaTeX.\n"
+                               "\n"
+                               "See the LaTeX manual or LaTeX Companion for explanation.\n"
+                               "Type  H <return>  for immediate help.\n"
+                               " ...\n"
+                               "\n"
+                               "l.4 $x^2 + α\n"
+                               "             β$\n")
+                      "$x^2 + αβ$" 3
+                      (:message ,(concat "LaTeX Error: Unicode character α (U+03B1)"
+                                         " not set up for use with LaTeX.")
+                                :line 1 :column 8))
+                     ;; TeX names a line after LATEX.
+                     (,(concat "! Missing $ inserted.\n<inserted text> \n"
+                               "                $\nl.5 \\end{document}\n")
+                      "$x^2 + y" 3
+                      (:message "Missing $ inserted." :line nil :column nil))
+                     ;; TeX names no line; the next `! ' line is not this
+                     ;; error's.
+                     (,(concat "! File ended while scanning use of \\frac .\n"
+                               "<inserted text> \n                \\par \n"
+                               "<*> equation.tex\n\n"
+                               "! ==> Fatal error occurred, no output DVI file produced!\n"
+                               "l.4 $x$\n")
+                      "$\\frac{1}{$" 3
+                      (:message "File ended while scanning use of \\frac ."
+                                :line nil :column nil))
+                     ;; Not the input's fault, or no error at all.
+                     ("! I can't write on file `equation.dvi'.\n" "$x$" 3 nil)
+                     ("This is pdfTeX, Version 3.141592653-2.6-1.40.28\n" "$x$" 3 nil)))
+      (should (equal (latex-to-svg-backend-tests--formula-error log latex offset)
+                     expected)))))
+
+(ert-deftest latex-to-svg-backend-compile-counts-lines-before-the-equation ()
+  ;; `--compile' gives the parser the number of lines before LATEX in
+  ;; `equation.tex', with the full preamble, the not-precompiled text and a
+  ;; toolchain prefix; `latex' runs with the environment that prints the
+  ;; whole line, and `dvisvgm' without it.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (let* ((latex-to-svg-backend-preamble-not-precompiled "\\def\\a{a}\n\\def\\b{b}")
+           (doc "$x +\n\\undefined$")
+           (key (latex-to-svg-backend--cache-key doc))
+           (faults nil))
+      (cl-letf (((symbol-function 'latex-to-svg-backend--compile-failed)
+                 (lambda (_key _latex _dir &optional _output _engine fault _exit)
+                   (push fault faults))))
+        (dolist (toolchain (list nil
+                                 (append '(:prefix "\\relax\n\\relax\n")
+                                         (latex-to-svg-backend--latex-toolchain))))
+          (latex-to-svg-backend--compile key doc nil nil nil toolchain)
+          (let* ((process (car l2s-test-processes))
+                 (tex (car (last (plist-get (aref process 3) :command))))
+                 (lines (split-string (latex-to-svg-backend-tests--tex-source tex)
+                                      "\n"))
+                 (n (1+ (seq-position lines "\\undefined$"))))
+            (should (member "max_print_line=1000" (aref process 5)))
+            (with-temp-file (expand-file-name "equation.log" (aref process 4))
+              (insert (format "! Undefined control sequence.\nl.%d \\undefined\n" n)))
+            (latex-to-svg-backend-tests--finish-fake-process process 1)
+            (should (equal (pop faults)
+                           '(:message "Undefined control sequence."
+                                      :line 2 :column 10)))))
+        ;; The converter does not get the TeX settings.
+        (latex-to-svg-backend--compile key doc)
+        (let ((latex (car l2s-test-processes)))
+          (with-temp-file (expand-file-name "equation.dvi" (aref latex 4))
+            (insert "fake dvi"))
+          (latex-to-svg-backend-tests--finish-fake-process latex 0))
+        (should-not (member "max_print_line=1000"
+                            (aref (car l2s-test-processes) 5)))))))
 
 (ert-deftest latex-to-svg-backend-docstrings-show-delimiters ()
   ;; `C-h f' reads `\\[' as the start of a key reference, so a docstring that

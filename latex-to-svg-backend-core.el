@@ -892,13 +892,16 @@ unwritable BUFFER must never prevent the process chain from settling."
       (error nil))))
 
 (defun latex-to-svg-backend--start-process
-    (stage command dir output-buffer sentinel)
+    (stage command dir output-buffer sentinel &optional environment)
   "Start STAGE directly with argv COMMAND in DIR.
 Send stdout and stderr to OUTPUT-BUFFER and install SENTINEL.  No
-shell is involved, so this is independent of `shell-file-name'."
+shell is involved, so this is independent of `shell-file-name'.
+ENVIRONMENT is a list of \"VARIABLE=VALUE\" strings set for this
+process only."
   (latex-to-svg-backend--append-process-log
    output-buffer (format "[%s] %S" stage command))
-  (let ((default-directory (file-name-as-directory dir)))
+  (let ((default-directory (file-name-as-directory dir))
+        (process-environment (append environment process-environment)))
     (make-process
      :name (format "latex-to-svg-backend-%s" stage)
      :buffer output-buffer
@@ -910,8 +913,10 @@ shell is involved, so this is independent of `shell-file-name'."
 (defun latex-to-svg-backend--run-process-chain
     (dir output-buffer stages done)
   "Run STAGES sequentially in DIR, logging to OUTPUT-BUFFER, then call DONE.
-Each element of STAGES is (NAME COMMAND OUTPUT-FILE), where COMMAND
-is an argv list passed directly to `make-process'.  Each stage's
+Each element of STAGES is (NAME COMMAND OUTPUT-FILE ENVIRONMENT), where
+COMMAND is an argv list passed directly to `make-process' and the
+optional ENVIRONMENT is as for `latex-to-svg-backend--start-process'.
+Each stage's
 terminal status, exit status, and sentinel event are logged to
 OUTPUT-BUFFER.  A stage succeeds only when it exits with status zero
 and OUTPUT-FILE exists.  DONE is called once with non-nil on complete
@@ -930,7 +935,8 @@ status 127; only then is the file checked."
         (remaining)
         (if (null remaining)
             (funcall done t)
-          (pcase-let* ((`(,stage ,command ,output-file) (car remaining))
+          (pcase-let* ((`(,stage ,command ,output-file ,environment)
+                        (car remaining))
                        (settled nil))
             (condition-case err
                 (latex-to-svg-backend--start-process
@@ -971,7 +977,8 @@ status 127; only then is the file checked."
                           ((and (eq status 'exit)
                                 (not (zerop exit-status)))
                            (funcall done nil (cons stage exit-status)))
-                          (t (funcall done nil))))))))
+                          (t (funcall done nil)))))))
+                 environment)
               (file-missing
                (latex-to-svg-backend--append-process-log
                 output-buffer
