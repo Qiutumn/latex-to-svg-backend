@@ -2525,6 +2525,20 @@ LATEX and OFFSET are as for `latex-to-svg-backend--latex-formula-error'."
       (should (equal (latex-to-svg-backend-tests--formula-error log latex offset)
                      expected)))))
 
+(ert-deftest latex-to-svg-backend-ratex-formula-error-reads-the-output ()
+  ;; The message is RaTeX's; it gives no line or column in LATEX.  A disk
+  ;; error, a panic or another exit status is not the formula's fault.
+  (let ((output (concat "[ratex] (\"render-svg\" \"--input\" \"equation.txt\")\n"
+                        latex-to-svg-backend-tests--ratex-parse-error
+                        "[ratex] status=exit exit-status=1 event=\"exited\"\n")))
+    (should (equal (latex-to-svg-backend--ratex-formula-error '(ratex . 1) output)
+                   '(:message "ParseError at position 0: Undefined control sequence: \\SI"
+                              :line nil :column nil)))
+    (should-not (latex-to-svg-backend--ratex-formula-error
+                 '(ratex . 1) "Failed to write SVG\n"))
+    (should-not (latex-to-svg-backend--ratex-formula-error '(ratex . 134) output))
+    (should-not (latex-to-svg-backend--ratex-formula-error nil output))))
+
 (ert-deftest latex-to-svg-backend-compile-counts-lines-before-the-equation ()
   ;; `--compile' gives the parser the number of lines before LATEX in
   ;; `equation.tex', with the full preamble, the not-precompiled text and a
