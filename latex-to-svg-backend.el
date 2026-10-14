@@ -281,7 +281,9 @@ equation per session."
     (when (file-readable-p file)
       (condition-case err
           (with-temp-buffer
-            (insert-file-contents file)
+            ;; As `latex-to-svg-backend--record-failure' writes it.
+            (let ((coding-system-for-read 'utf-8))
+              (insert-file-contents file))
             (read (current-buffer)))
         ;; Unreadable syntax: repairable, by making the entry compile again.
         ((end-of-file invalid-read-syntax)
@@ -302,6 +304,21 @@ equation per session."
 KEY is a content key (see `latex-to-svg-backend--cache-key').  See
 `latex-to-svg-backend--record-failure'."
   (plist-get (latex-to-svg-backend--sidecar key) :failed))
+
+(defun latex-to-svg-backend--recorded-failure (key engine)
+  "Return the failure ENGINE recorded for the equation of KEY, or nil.
+KEY is a content key (see `latex-to-svg-backend--cache-key').  The
+result is the plist of `latex-to-svg-backend--failure', of kind
+`formula', as the compile that failed gave it.  A record written before
+0.15.0 holds no message, line or column, so those are nil."
+  (when-let* ((record (latex-to-svg-backend--sidecar key))
+              ((plist-get record :failed)))
+    (latex-to-svg-backend--failure
+     'formula engine
+     :message (plist-get record :message)
+     :line (plist-get record :line)
+     :column (plist-get record :column)
+     :key key)))
 
 (defun latex-to-svg-backend--fall-back (latex fallback metadata waiter inputs)
   "Take WAITER's request for LATEX over to the engine FALLBACK.

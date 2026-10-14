@@ -1107,29 +1107,69 @@ M-x customize-group RET latex-to-svg-backend-%s."
                (latex-to-svg-backend--engine-name engine) program engine)
        :warning))))
 
-(defun latex-to-svg-backend--record-failure (key)
+(cl-defun latex-to-svg-backend--failure
+    (kind engine &key message line column key program)
+  "Return the plist that describes a request that ended without a picture.
+That is (:kind KIND :engine ENGINE :message MESSAGE :line LINE :column
+COLUMN :log LOG :program PROGRAM).  KIND is `formula' when ENGINE
+rejected the equation, which is recorded, and `setup' otherwise: a
+missing program, a crash, no SVG support.  ENGINE is the engine that
+failed, nil meaning `latex'.  MESSAGE is one line, for a tooltip.  LINE
+\(1-based) and COLUMN (0-based) locate the error in the LaTeX string the
+caller passed, or are nil.  LOG is the log saved for the equation of
+KEY (see `latex-to-svg-backend--log-file'), or nil when there is none.
+PROGRAM is the program that was not found, for a `setup' failure."
+  (list :kind kind
+        :engine (or engine 'latex)
+        :message message
+        :line line
+        :column column
+        :log (when key
+               (let ((log (latex-to-svg-backend--log-file key)))
+                 (and (file-exists-p log) log)))
+        :program program))
+
+(defun latex-to-svg-backend--record-failure (key failure)
   "Record in KEY's `.eld' sidecar that the formula failed to compile.
-The record is `(:failed t)'.  A request that finds it does not compile
-again (see `latex-to-svg-backend'), until
+FAILURE is the plist of `latex-to-svg-backend--failure'.  The record is
+`(:failed t . FAILURE)' without `:log' and `:program': the log is
+found from KEY when the record is read, and a recorded failure is the
+formula's, so no program is missing.  A request that finds it does not
+compile again (see `latex-to-svg-backend'), until
 `latex-to-svg-backend-invalidate' deletes it.  Runs in the compile
 sentinel, so a sidecar that cannot be written is reported once and the
-equation is simply compiled again next time."
+equation is simply compiled again next time.
+
+The file is written as UTF-8, for the reason
+`latex-to-svg-backend--compile' gives: a message can quote a character
+of the equation."
   (condition-case err
-      (with-temp-file (latex-to-svg-backend--meta-file key)
-        (prin1 '(:failed t) (current-buffer)))
+      (let ((coding-system-for-write 'utf-8-unix))
+        (with-temp-file (latex-to-svg-backend--meta-file key)
+          (let ((print-length nil)
+                (print-level nil))
+            (prin1 (list :failed t
+                         :kind (plist-get failure :kind)
+                         :engine (plist-get failure :engine)
+                         :message (plist-get failure :message)
+                         :line (plist-get failure :line)
+                         :column (plist-get failure :column))
+                   (current-buffer)))))
     (file-error
      (latex-to-svg-backend--warn-once "recording a failed compile" err))))
 
 (defun latex-to-svg-backend--compile-failed
-    (key latex dir &optional process-output engine formula-fault exit)
+    (key latex dir &optional process-output engine fault exit)
   "Handle a failed compile of LATEX by ENGINE for KEY.
 DIR is the scratch directory containing equation.log when LaTeX
 created one.  PROCESS-OUTPUT is the captured stdout and stderr from
 the engine's processes.  A persistent log containing the
 available diagnostics is written to the cache directory.
 
-FORMULA-FAULT non-nil says the engine rejected the formula itself, so
-compiling it again would fail again: the failure is recorded (see
+FAULT non-nil says the engine rejected the formula itself, so
+compiling it again would fail again.  It is the plist (:message MESSAGE
+:line LINE :column COLUMN) the engine read from its output (see
+`latex-to-svg-backend--failure').  The failure is recorded (see
 `latex-to-svg-backend--record-failure'), and each waiter with a
 fallback (see `latex-to-svg-backend--waiter') is handed to it.  A
 missing program, a crash or a killed process is not the formula's
@@ -1170,13 +1210,15 @@ echoing an unencodable Unicode character would otherwise make
             (insert process-output)))))
     (if (stringp (cdr exit))
         (latex-to-svg-backend--report-missing-program engine (cdr exit))
-      (when formula-fault
-        (latex-to-svg-backend--record-failure key))
+      (when fault
+        (latex-to-svg-backend--record-failure
+         key (apply #'latex-to-svg-backend--failure 'formula engine
+                    :key key fault)))
       (dolist (waiter (gethash key latex-to-svg-backend--pending))
         (let ((fallback (plist-get waiter :fallback))
               (buffer (plist-get waiter :buffer)))
           (cond
-           ((and formula-fault fallback)
+           ((and fault fallback)
             ;; The fallback's own waiter has none, so a failure there is
             ;; reported instead of falling back again.
             (condition-case fb-err

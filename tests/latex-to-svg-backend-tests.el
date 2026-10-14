@@ -2119,7 +2119,9 @@ NEWEST is a function returning the most recently started fake process."
       (should (equal (with-temp-buffer
                        (insert-file-contents (latex-to-svg-backend--meta-file key))
                        (read (current-buffer)))
-                     '(:failed t)))
+                     '(:failed t :kind formula :engine ratex
+                               :message "ParseError at position 0: Undefined control sequence: \\SI"
+                               :line nil :column nil)))
       (should-not (latex-to-svg-backend-metadata doc 'ratex))
       (should (= 1 (length l2s-test-warnings)))
       ;; Known failure: no compile, no second warning in this buffer.
@@ -2538,6 +2540,48 @@ LATEX and OFFSET are as for `latex-to-svg-backend--latex-formula-error'."
                  '(ratex . 1) "Failed to write SVG\n"))
     (should-not (latex-to-svg-backend--ratex-formula-error '(ratex . 134) output))
     (should-not (latex-to-svg-backend--ratex-formula-error nil output))))
+
+;; The failure record
+
+(ert-deftest latex-to-svg-backend-failure-record-holds-the-plist ()
+  ;; The record holds what the engine read from its log, and reads back
+  ;; with the saved log's path.  It is written as UTF-8, since a message
+  ;; can quote the equation.  A record from 0.14.0 reads with nil fields.
+  (let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-record" t))
+         (latex-to-svg-backend--warned (make-hash-table :test 'equal))
+         (dir (make-temp-file "l2s-record-src" t))
+         (key (latex-to-svg-backend--cache-key "$x^2 + \u03b1$"))
+         (old (latex-to-svg-backend--cache-key "$old$"))
+         (message "LaTeX Error: Unicode character \u03b1 (U+03B1) not set up for use with LaTeX."))
+    (unwind-protect
+        (progn
+          (let ((coding-system-for-write 'utf-8-unix))
+            (write-region (concat "! " message "\n") nil
+                          (expand-file-name "equation.log" dir)))
+          (let ((coding-system-for-write nil)
+                (select-safe-coding-system-function
+                 (lambda (&rest _)
+                   (error "coding system not pinned: the write would have prompted"))))
+            (cl-letf (((symbol-function 'display-warning) #'ignore))
+              (latex-to-svg-backend--compile-failed
+               key "$x^2 + \u03b1$" dir "" 'latex
+               (list :message message :line 1 :column 8))))
+          (should (latex-to-svg-backend--failed-p key))
+          (should (equal (latex-to-svg-backend--recorded-failure key 'latex)
+                         (list :kind 'formula :engine 'latex :message message
+                               :line 1 :column 8
+                               :log (latex-to-svg-backend--log-file key)
+                               :program nil)))
+          (should-not (latex-to-svg-backend-metadata "$x^2 + \u03b1$"))
+          (with-temp-file (latex-to-svg-backend--meta-file old)
+            (prin1 '(:failed t) (current-buffer)))
+          (should (equal (latex-to-svg-backend--recorded-failure old 'ratex)
+                         '(:kind formula :engine ratex :message nil :line nil
+                                 :column nil :log nil :program nil)))
+          (should-not (latex-to-svg-backend--recorded-failure
+                       (latex-to-svg-backend--cache-key "$none$") 'latex)))
+      (delete-directory dir t)
+      (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (ert-deftest latex-to-svg-backend-compile-counts-lines-before-the-equation ()
   ;; `--compile' gives the parser the number of lines before LATEX in

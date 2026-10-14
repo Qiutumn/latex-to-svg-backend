@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   50 characters of it. The backend reads the error's message, line and
   column from that log. texres ignores these settings, so for a long
   line its column is unknown.
+- The failure record in an equation's `.eld` sidecar holds the error:
+  `(:failed t :kind formula :engine ENGINE :message MESSAGE :line LINE
+  :column COLUMN)`, written as UTF-8. A record written by 0.14.0,
+  `(:failed t)`, still reads, with no message, line or column.
 
 ## [0.14.0] - 2026-10-11
 
