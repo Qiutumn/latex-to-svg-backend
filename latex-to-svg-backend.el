@@ -655,6 +655,28 @@ say which engine typeset it."
                            (latex-to-svg-backend--cache-key latex fallback))))
       fallback))))
 
+;;;###autoload
+(defun latex-to-svg-backend-failure (latex &optional engine fallback)
+  "Return the recorded failure a request for LATEX resolves to, or nil.
+ENGINE and FALLBACK are as for `latex-to-svg-backend'.  The result is
+the plist a request's callback gets when it ends without a picture (see
+`latex-to-svg-backend'), of kind `formula': ENGINE's when it failed on
+LATEX, or with FALLBACK, FALLBACK's when it failed too.  Nil when ENGINE
+has a picture, when FALLBACK has one, and when no failure is recorded.
+A front-end calls it with no request in flight, for a tooltip or a
+redraw.  Call it in the buffer the request was made for, as for
+`latex-to-svg-backend-engine-used'."
+  (let* ((engine (latex-to-svg-backend--engine engine))
+         (fallback (and fallback (latex-to-svg-backend--engine fallback)))
+         (key (latex-to-svg-backend--cache-key latex engine)))
+    (unless (file-exists-p (latex-to-svg-backend--svg-file key))
+      (when-let* ((failure (latex-to-svg-backend--recorded-failure key engine)))
+        (if (and fallback (not (eq fallback engine)))
+            (let ((fallback-key (latex-to-svg-backend--cache-key latex fallback)))
+              (unless (file-exists-p (latex-to-svg-backend--svg-file fallback-key))
+                (latex-to-svg-backend--recorded-failure fallback-key fallback)))
+          failure)))))
+
 (provide 'latex-to-svg-backend)
 
 ;;; latex-to-svg-backend.el ends here

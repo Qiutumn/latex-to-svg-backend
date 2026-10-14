@@ -2593,6 +2593,38 @@ LINE of LATEX counted in the source the compile wrote."
       (should (eq 'latex (plist-get (car outcomes) :engine)))
       (should (= 2 (length l2s-test-processes))))))
 
+(ert-deftest latex-to-svg-backend-failure-reads-the-records ()
+  ;; ENGINE's failure, or FALLBACK's when FALLBACK failed too; nil when
+  ;; either has a picture or nothing is recorded.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((record (lambda (doc engine message)
+                    (latex-to-svg-backend--record-failure
+                     (latex-to-svg-backend--cache-key doc engine)
+                     (latex-to-svg-backend--failure 'formula engine :message message))))
+          (svg (lambda (doc engine)
+                 (with-temp-file (latex-to-svg-backend--svg-file
+                                  (latex-to-svg-backend--cache-key doc engine))
+                   (insert "<svg/>"))))
+          (message (lambda (doc &rest args)
+                     (plist-get (apply #'latex-to-svg-backend-failure doc args)
+                                :message))))
+      (should-not (latex-to-svg-backend-failure "$a$"))
+      (funcall svg "$a$" 'latex)
+      (should-not (latex-to-svg-backend-failure "$a$"))
+      (funcall record "$b$" 'ratex "RaTeX: bad.")
+      (should (equal (latex-to-svg-backend-failure "$b$" 'ratex)
+                     '(:kind formula :engine ratex :message "RaTeX: bad."
+                             :line nil :column nil :log nil :program nil)))
+      ;; The fallback has not compiled it yet.
+      (should-not (latex-to-svg-backend-failure "$b$" 'ratex 'latex))
+      (should (equal (funcall message "$b$" 'ratex 'ratex) "RaTeX: bad."))
+      (funcall record "$b$" 'latex "LaTeX: bad.")
+      (should (equal (funcall message "$b$" 'ratex 'latex) "LaTeX: bad."))
+      (funcall record "$c$" 'ratex "RaTeX: bad.")
+      (funcall svg "$c$" 'latex)
+      (should-not (latex-to-svg-backend-failure "$c$" 'ratex 'latex))
+      (should (equal (funcall message "$c$" 'ratex) "RaTeX: bad.")))))
+
 (ert-deftest latex-to-svg-backend-fall-back-answers-from-the-cache ()
   ;; A fallback whose SVG or failure record is there already is not
   ;; compiled: the callback gets nil, or the recorded failure.

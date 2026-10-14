@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `latex-to-svg-backend-failure`: `(latex-to-svg-backend-failure LATEX
+  ENGINE FALLBACK)` returns the recorded failure a request with those
+  arguments resolves to, the plist its callback gets, or `nil`. With
+  `FALLBACK`, it is `nil` when the fallback has a picture, and the
+  fallback's failure when it failed too. It is for a caller with no
+  request in flight, for a tooltip or a redraw.
+
 ### Changed
 
 - **Breaking:** `:callback` takes one argument, OUTCOME, and the backend
