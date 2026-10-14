@@ -88,14 +88,18 @@
 ;; The backend is deliberately unaware of that distinction.
 ;;
 ;; Returns an image now when one can be produced synchronously (cache /
-;; on-disk SVG), else nil after scheduling an asynchronous
-;; compile; CALLBACK (a zero-argument function) is invoked once the SVG is
-;; ready, so the caller can re-query and place the image.  Concurrent
-;; requests for the same equation are coalesced onto a single compile.
+;; on-disk SVG), else nil after scheduling an asynchronous compile.
+;; CALLBACK, a function of one argument, is called once for that
+;; request: with nil once the SVG is ready, so the caller can re-query
+;; and place the image, or with a plist that describes the failure:
+;; its kind, engine, message, line and column in LATEX, and log.
+;; Concurrent requests for the same equation are coalesced onto a
+;; single compile.
 ;;
 ;; A formula the engine rejects is recorded and not compiled again;
-;; `:fallback latex' typesets it with LaTeX instead, and
-;; `latex-to-svg-backend-engine-used' says which engine drew a picture.
+;; `:fallback latex' typesets it with LaTeX instead,
+;; `latex-to-svg-backend-engine-used' says which engine drew a picture,
+;; and `latex-to-svg-backend-failure' returns a recorded failure.
 ;;
 ;; The backend reads no faces and no frames.  The caller passes the
 ;; tint as `:color' and the x-height of the text as `:x-height', both
@@ -397,7 +401,8 @@ the document -- the failure is recorded in the `.eld' sidecar, and a
 later request with the same ENGINE returns nil without compiling.
 `latex-to-svg-backend-invalidate' deletes the record, so the next
 request compiles again.  A failure that is not the formula's (a missing
-program, a crash) is not recorded.
+program, a crash) is not recorded.  `latex-to-svg-backend-failure'
+returns a recorded failure.
 
 FALLBACK is nil (the default: no fallback) or an engine, as for ENGINE,
 that typesets LATEX when ENGINE has rejected it: under its own cache
@@ -481,10 +486,35 @@ Returns immediately with:
   * nil when ENGINE failed and there is no FALLBACK picture.
 
 When the equation is not yet compiled, returns nil and
-schedules an asynchronous compile; CALLBACK (a zero-argument function)
-is invoked once, when the SVG is ready, so the caller can re-query
-\(call `latex-to-svg-backend' again, which now returns the image) and place
-it.  Concurrent requests for the same equation share one compile.
+schedules an asynchronous compile.  Concurrent requests for the same
+equation share one compile.
+
+CALLBACK is a function of one argument, OUTCOME.  It is called exactly
+once for every request that returned nil, except one that found the
+equation compiled with no X-HEIGHT, which calls nothing.  OUTCOME is:
+
+  * nil when the SVG is in the cache: the caller re-queries (calls
+    `latex-to-svg-backend' again, which now returns the image) and
+    places it;
+  * otherwise a plist, when the request ended without a picture:
+
+      (:kind KIND :engine ENGINE :message MESSAGE :line LINE
+       :column COLUMN :log LOG :program PROGRAM)
+
+    KIND is `formula' when the engine rejected LATEX, which is recorded,
+    and `setup' for a missing program, a crash, or an Emacs that cannot
+    display SVG images, which is not.  ENGINE is the engine that failed:
+    with FALLBACK, the fallback's, the last engine that tried.  MESSAGE
+    is one line, for a tooltip.  LINE (1-based) and COLUMN (0-based)
+    locate the error in LATEX, where TeX stopped, or are nil: when TeX
+    stopped outside LATEX, when texres cut a long line short, and always
+    for RaTeX.  LOG is the saved log, or nil.  PROGRAM is the program
+    that was not found, for a `setup' failure.  QUIET does not change
+    OUTCOME, so a caller that shows the error itself passes QUIET.
+
+When the request finds a failure record, or a failure ends it before
+it returns (a missing program, no SVG support), CALLBACK is called from
+a timer, so it never runs before `latex-to-svg-backend' returns.
 
 Call within the target buffer: the engines read their options there (see
 `latex-to-svg-backend--inputs'), so a buffer-local value, from a

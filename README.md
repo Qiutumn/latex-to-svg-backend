@@ -174,7 +174,7 @@ In a running Emacs, load `dev/latex-to-svg-backend-benchmark.el` and call `M-x l
 
 `LATEX` is placed **verbatim** in the LaTeX document body, so pass valid body LaTeX — math with its delimiters (`$x$`, `\(x\)`, `\[x\]`) or a full environment (`\begin{equation}…\end{equation}`). The delimiters also decide inline vs display sizing; the backend is deliberately unaware of that distinction (a front-end that has bare bodies wraps them itself). Equation numbering, if a front-end wants it, is just a `\setcounter{equation}{N}` prepended to the body — it folds into the content hash for free.
 
-Returns an image now when one can be produced synchronously (cache / on-disk SVG), else `nil` after scheduling an asynchronous compile; `CALLBACK` (a zero-argument function) is invoked once the SVG is ready, so the caller can re-query (`latex-to-svg-backend` again → now returns the image) and place it. Concurrent requests for the same equation are coalesced onto a single compile. At most `latex-to-svg-backend-jobs` compiles run at once; further compiles wait in a queue and start, oldest first, as running ones end.
+Returns an image now when one can be produced synchronously (cache / on-disk SVG), else `nil` after scheduling an asynchronous compile. `CALLBACK` is a function of one argument, OUTCOME, and is called exactly once for every request that returned `nil`: with `nil` once the SVG is ready, so the caller can re-query (`latex-to-svg-backend` again → now returns the image) and place it, or with a plist when the request ended without a picture; see [Failed compiles](#failed-compiles-and-the-fallback-engine). An equation compiled but requested with no `X-HEIGHT` returns `nil` and calls nothing (see `X-HEIGHT` below). Concurrent requests for the same equation are coalesced onto a single compile. At most `latex-to-svg-backend-jobs` compiles run at once; further compiles wait in a queue and start, oldest first, as running ones end.
 
 `ENGINE` is `latex` (the default, also `nil`), `ratex` or `texres`; see [Engines](#engines). Any other value signals an error. `FALLBACK` names an engine that typesets `LATEX` when `ENGINE` rejects it, and `QUIET` drops the warning a failed compile gives; see [Failed compiles](#failed-compiles-and-the-fallback-engine).
 
@@ -205,6 +205,7 @@ Helpers a front-end typically needs for its refresh policy:
 | `latex-to-svg-backend-invalidate` | forget a cached render (delete its on-disk SVG + in-memory images, and its `.eld` sidecar) so the next call recompiles — an escape hatch for a stale/corrupt cache, and the way to retry a failed compile; an optional second argument names the engine, as for `:engine` |
 | `latex-to-svg-backend-metadata` | read back compile metadata for a LaTeX body (see below), on cache hit or miss; an optional second argument names the engine |
 | `latex-to-svg-backend-engine-used` | `(latex-to-svg-backend-engine-used LATEX ENGINE FALLBACK)`: the engine whose picture a request with those arguments resolves to — `ENGINE`, `FALLBACK` when `ENGINE` failed, or `nil` when neither has a picture |
+| `latex-to-svg-backend-failure` | `(latex-to-svg-backend-failure LATEX ENGINE FALLBACK)`: the recorded failure a request with those arguments resolves to, the plist its callback gets — `ENGINE`'s, `FALLBACK`'s when it failed too, or `nil` when either has a picture or nothing is recorded. For a caller with no request in flight, for a tooltip or a redraw |
 
 ### Size and baseline
 
@@ -220,11 +221,28 @@ Using TeX's baseline for the `:ascent` follows `org-latex-preview` in [the fork 
 
 ### Failed compiles and the fallback engine
 
-When an engine rejects the formula — RaTeX cannot parse it, or LaTeX stops on an error in the document — the failure is recorded in the equation's `.eld` sidecar as `(:failed t)`, and a later request with the same `:engine` returns `nil` without compiling. A missing program, a crash or a killed process is not the formula's fault, so it is not recorded, and the next request compiles again. A missing program is warned about once per session per engine and program: "The texres engine could not run `pdftocairo': program not found." The record belongs to the cache key, so anything that changes the key retries on its own; `latex-to-svg-backend-invalidate` deletes the record for the rest (see [Troubleshooting](#troubleshooting)).
+When an engine rejects the formula — RaTeX cannot parse it, or LaTeX stops on an error in the document — the failure is recorded in the equation's `.eld` sidecar as `(:failed t :kind formula :engine ENGINE :message MESSAGE :line LINE :column COLUMN)`, and a later request with the same `:engine` returns `nil` without compiling. A missing program, a crash or a killed process is not the formula's fault, so it is not recorded, and the next request compiles again. A missing program is warned about once per session per engine and program: "The texres engine could not run `pdftocairo': program not found." The record belongs to the cache key, so anything that changes the key retries on its own; `latex-to-svg-backend-invalidate` deletes the record for the rest (see [Troubleshooting](#troubleshooting)).
 
-A failed compile warns once per equation per buffer, naming the buffer and linking to the log. `:quiet t` drops that warning for the call; configuration problems (a missing program, an unwritable cache, an Emacs without SVG support) still warn. The backend has no option for it: a front-end owns the user's choice and passes it, as for `:engine`.
+A failed compile warns once per equation per buffer, naming the buffer and linking to the log. `:quiet t` drops that warning for the call; configuration problems (a missing program, an unwritable cache, an Emacs without SVG support) still warn. The backend has no option for it: a front-end owns the user's choice and passes it, as for `:engine`. A front-end that shows the error itself passes `:quiet t` and uses the plist below.
 
-`:fallback 'latex` typesets a formula `ENGINE` rejected with LaTeX instead, under LaTeX's own cache key, so a later request with the same `:engine` and `:fallback` returns LaTeX's picture from cache. The callbacks queued for the failed compile fire when LaTeX's SVG is ready. The same string must be valid LaTeX: a macro defined only in `latex-to-svg-backend-ratex-macros` fails in both engines. When `latex` or `dvisvgm` is missing, the backend warns as for any missing program. The first fallback picture in a buffer is announced with a message such as `3 equations in notes.md fell back to LaTeX: RaTeX could not parse them`, since those pictures are typeset in LaTeX's style (Computer Modern) and RaTeX's in KaTeX's fonts. `latex-to-svg-backend-engine-used` tells a front-end which engine drew an image, for example for a tooltip.
+A request that ended without a picture calls `CALLBACK` with a plist:
+
+```elisp
+(:kind formula             ; formula: the formula's fault, recorded
+                           ; setup: a missing program, a crash, no SVG support; not recorded
+ :engine latex             ; the engine that failed: latex, ratex or texres
+ :message "Undefined control sequence."   ; one line, for a tooltip
+ :line 1                   ; 1-based line in LATEX, or nil
+ :column 32                ; 0-based column in that line, or nil
+ :log "/…/KEY.log"         ; the saved log, or nil when there is none
+ :program "dvisvgm")       ; setup only: the program not found
+```
+
+`:line` and `:column` count in `LATEX`, the string the caller passed: a front-end that puts lines in front of the equation (a `\setcounter`, say) subtracts them. They are where TeX stopped: `:line` is the N of TeX's `l.N` line, counted in `LATEX`, and `:column` is where TeX split that line. An error TeX reports outside `LATEX`, such as *Missing $ inserted* at `\end{document}`, has `:line` and `:column` nil. The LaTeX engine runs `latex` with `error_line`, `half_error_line` and `max_print_line` raised in its environment, so the log shows the whole line; texres ignores them and cuts the line to about 50 characters, so its `:column` is nil for a long line. RaTeX gives a message and no position: the position it reports counts in the formula it was given, which has no delimiters and has the macros in front.
+
+When the request finds a failure record, or a failure ends it before `latex-to-svg-backend` returns, as a missing program or an Emacs without SVG support does, `CALLBACK` is called from a timer, so it never runs before the request returns. A cached failure, after a restart say, is the plist the failed compile gave, and `latex-to-svg-backend-failure` returns it with no request in flight.
+
+`:fallback 'latex` typesets a formula `ENGINE` rejected with LaTeX instead, under LaTeX's own cache key, so a later request with the same `:engine` and `:fallback` returns LaTeX's picture from cache. The callbacks queued for the failed compile are called when LaTeX's compile ends: with `nil` when its SVG is ready, with LaTeX's failure when it fails too. With a fallback, the failure a callback gets is the fallback's, the last engine that tried. The same string must be valid LaTeX: a macro defined only in `latex-to-svg-backend-ratex-macros` fails in both engines. When `latex` or `dvisvgm` is missing, the backend warns as for any missing program. The first fallback picture in a buffer is announced with a message such as `3 equations in notes.md fell back to LaTeX: RaTeX could not parse them`, since those pictures are typeset in LaTeX's style (Computer Modern) and RaTeX's in KaTeX's fonts. `latex-to-svg-backend-engine-used` tells a front-end which engine drew an image, for example for a tooltip.
 
 ### Compile metadata (`.eld` sidecar)
 
@@ -249,7 +267,7 @@ With `latex-to-svg-backend-metadata-prefix` set to `"L2S"`, a successful compile
 
 `(latex-to-svg-backend-metadata BODY)` returns that plist (or `nil` if absent/corrupt).  Here the block shows equation numbers `INITIAL`…`FINAL` (just `(7)`); `FINAL < INITIAL` means it produced none.
 
-For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg-backend BODY …)` with no `:metadata` and inject no `\typeout`. No sidecar is written and `(latex-to-svg-backend-metadata BODY)` returns `nil` — the whole mechanism is inert unless you opt in (and stays off entirely while `latex-to-svg-backend-metadata-prefix` is `nil`, its default). So `nil` is simply the normal answer for any un-probed equation; there is no "no number" sentinel to handle. `latex-to-svg-backend-invalidate` deletes the `.eld` with the SVG. The same file holds the record of a failed compile, `(:failed t)` (see [Failed compiles](#failed-compiles-and-the-fallback-engine)), for which `latex-to-svg-backend-metadata` returns `nil`. `\typeout` has no visual effect, so the SVG is byte-identical to an un-probed one (only its content hash differs). Keep the emitted line short — TeX wraps log lines near column 80.
+For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg-backend BODY …)` with no `:metadata` and inject no `\typeout`. No sidecar is written and `(latex-to-svg-backend-metadata BODY)` returns `nil` — the whole mechanism is inert unless you opt in (and stays off entirely while `latex-to-svg-backend-metadata-prefix` is `nil`, its default). So `nil` is simply the normal answer for any un-probed equation; there is no "no number" sentinel to handle. `latex-to-svg-backend-invalidate` deletes the `.eld` with the SVG. The same file holds the record of a failed compile, `(:failed t …)` (see [Failed compiles](#failed-compiles-and-the-fallback-engine)), for which `latex-to-svg-backend-metadata` returns `nil`. `\typeout` has no visual effect, so the SVG is byte-identical to an un-probed one (only its content hash differs). Keep the emitted line short — TeX wraps log lines near column 80.
 
 ### Sketch of a front-end
 
@@ -277,12 +295,15 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
         (my-overlay buffer beg end img)          ; cached
       (let ((s (copy-marker beg)) (e (copy-marker end)))
         (apply #'latex-to-svg-backend latex
+               :quiet t
                :callback
-               (lambda ()
+               (lambda (outcome)
                  (with-current-buffer buffer
-                   (when-let* ((img (apply #'latex-to-svg-backend latex
-                                           (my-appearance buffer))))
-                     (my-overlay buffer s e img))))
+                   (if outcome
+                       (my-mark-error buffer s e outcome) ; :message, :line, ...
+                     (when-let* ((img (apply #'latex-to-svg-backend latex
+                                             (my-appearance buffer))))
+                       (my-overlay buffer s e img)))))
                (my-appearance buffer))))))
 ```
 
