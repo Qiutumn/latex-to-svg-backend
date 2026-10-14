@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-14
+
+A request that ends without a picture says so: the callback gets the
+failure, with the error's message and its line and column in the
+equation, read from the engine's log. A cached failure gives the same
+plist, and `latex-to-svg-backend-failure` returns it.
+
 ### Added
 
 - `latex-to-svg-backend-failure`: `(latex-to-svg-backend-failure LATEX
@@ -635,7 +642,8 @@ Initial release.
 - LaTeX-to-SVG rendering engine: compile LaTeX to a color-independent SVG via
   `latex → dvisvgm`, with on-disk and in-memory caching.
 
-[Unreleased]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.12.0...v0.12.1
