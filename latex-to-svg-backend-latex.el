@@ -179,14 +179,16 @@ short: TeX wraps log lines near column 80."
 ;; `latex-to-svg-backend--format-key' (a hash of the preamble text + LaTeX
 ;; program).  `--format-checked' records keys whose `.fmt' file was verified
 ;; fresh this session, so the freshness check runs at most once per key;
-;; `--format-blocklist' records keys whose `.fmt' file produced a compile
-;; failure, so precompilation is abandoned for them for the rest of the
-;; session and the backend falls back to full compiles.
+;; `--format-blocklist' records keys whose dump failed, or whose `.fmt' file
+;; produced a compile failure, so precompilation is abandoned for them for
+;; the rest of the session and the backend falls back to full compiles.
 (defvar latex-to-svg-backend--format-checked (make-hash-table :test 'equal)
   "Keys of the `.fmt' files verified fresh this session.")
 
 (defvar latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)
-  "Keys of the `.fmt' files that failed a compile; precompilation skipped.")
+  "Keys of the `.fmt' files that failed; precompilation skipped.
+Each is mapped to how it failed: `dump' when the dump failed, `load'
+when a compile that loaded the `.fmt' file failed.")
 
 (defvar latex-to-svg-backend--format-programs
   (list (lambda () latex-to-svg-backend-latex-program))
@@ -239,8 +241,9 @@ That is the project root (`project-root'), else `default-directory'.
 The directory is written into TeX code (see
 `latex-to-svg-backend--input-path'), so a directory whose name
 holds a character TeX reads as code is refused, as is a remote one
-\(the compile runs locally): the refusal is reported once and nil
-returned, and no `\\input@path' is written."
+\(the compile runs locally): the refusal is reported once per buffer
+\(see `latex-to-svg-backend--warn') and nil returned, and no
+`\\input@path' is written."
   (let ((dir (file-name-as-directory
               (expand-file-name
                (if-let* ((project (project-current)))
@@ -249,16 +252,22 @@ returned, and no `\\input@path' is written."
     (cond
      ;; LaTeX runs on this machine and cannot open a file on another.
      ((file-remote-p dir)
-      (latex-to-svg-backend--warn-once
-       "searching a remote directory for \\input files"
-       (list 'error (format "%s is remote, but LaTeX runs locally" dir))))
+      (latex-to-svg-backend--warn
+       "remote input directory"
+       (format "The project directory %s is remote, but LaTeX runs on this \
+machine, so `\\input' does not search it.
+To use the files of the project, open it from a local directory." dir))
+      nil)
      ;; The OS allows characters in a path that TeX reads as code: `%'
      ;; starts a comment, `#' a parameter, `\' a command, braces a group,
      ;; and `~' is a space.
      ((string-match-p "[\\{}%#~]" dir)
-      (latex-to-svg-backend--warn-once
-       "searching for \\input files"
-       (list 'error (format "%s holds one of \\ { } %% # ~" dir))))
+      (latex-to-svg-backend--warn
+       "input directory holds TeX code"
+       (format "The project directory %s holds one of \\ { } %% # ~, \
+which TeX reads as code, so `\\input' does not search it.
+To use the files of the project, rename the directory." dir))
+      nil)
      (t dir))))
 
 (defun latex-to-svg-backend--input-path ()
@@ -366,16 +375,15 @@ truename; another TeX first on variable `exec-path' changes either."
 That is when its stamp matches `latex-to-svg-backend--binary-stamp' for
 BINARY.  A `.fmt' file with no stamp is stale, so one dumped before
 stamps existed is dumped again once.  So is one with an unreadable
-stamp, which is reported once: the dump writes a new stamp."
+stamp, with no warning: the dump writes a new stamp, and warns when it
+cannot (see `latex-to-svg-backend--write-format-stamp')."
   (let ((file (latex-to-svg-backend--format-stamp-file format-file)))
     (when (file-readable-p file)
-      (when-let* ((stamp (condition-case err
+      (when-let* ((stamp (condition-case nil
                              (with-temp-buffer
                                (insert-file-contents file)
                                (read (current-buffer)))
-                           ((end-of-file invalid-read-syntax file-error)
-                            (latex-to-svg-backend--warn-once
-                             "reading a .fmt stamp" err))))
+                           ((end-of-file invalid-read-syntax file-error) nil)))
                   ((consp stamp))
                   (mtime (plist-get stamp :mtime))
                   (current (latex-to-svg-backend--binary-stamp binary)))
@@ -385,13 +393,20 @@ stamp, which is reported once: the dump writes a new stamp."
 
 (defun latex-to-svg-backend--write-format-stamp (format-file binary)
   "Record that the LaTeX BINARY dumped FORMAT-FILE, in its stamp.
-A stamp that cannot be written is reported once; the `.fmt' file still
-serves this session and is dumped again in the next."
-  (condition-case err
-      (with-temp-file (latex-to-svg-backend--format-stamp-file format-file)
-        (prin1 (latex-to-svg-backend--binary-stamp binary) (current-buffer)))
-    (file-error
-     (latex-to-svg-backend--warn-once "writing a .fmt stamp" err))))
+A stamp that cannot be written is reported once per buffer (see
+`latex-to-svg-backend--warn'); the `.fmt' file still serves this
+session and is dumped again in the next."
+  (let ((file (latex-to-svg-backend--format-stamp-file format-file)))
+    (condition-case err
+        (with-temp-file file
+          (prin1 (latex-to-svg-backend--binary-stamp binary) (current-buffer)))
+      (file-error
+       (latex-to-svg-backend--warn
+        "writing a .fmt stamp"
+        (format "Cannot write %s: %s.
+The preamble is precompiled again in each session.  %s"
+                file (error-message-string err)
+                (latex-to-svg-backend--cache-fix)))))))
 
 (defun latex-to-svg-backend--touch-format (format-file)
   "Bump FORMAT-FILE's modification time and return FORMAT-FILE, or nil.
@@ -400,13 +415,21 @@ than `latex-to-svg-backend-cache-max-age', so this runs on every compile
 that loads it: a session that runs for longer must not lose the `.fmt'
 file it uses.  Nil means another session collected FORMAT-FILE a
 moment ago; the caller then compiles with the full preamble.  Any other
-refusal by the filesystem is reported once and FORMAT-FILE returned:
-the `.fmt' file works, it only ages out."
+refusal by the filesystem is reported once per buffer (see
+`latex-to-svg-backend--warn') and FORMAT-FILE returned: the `.fmt' file
+works, it only ages out."
   (condition-case err
       (progn (set-file-times format-file) format-file)
     (file-missing nil)
     (file-error
-     (latex-to-svg-backend--warn-once "recording .fmt use" err)
+     (latex-to-svg-backend--warn
+      "recording .fmt use"
+      (format "Cannot record the use of %s: %s.
+The garbage collector deletes a .fmt file unused for \
+`latex-to-svg-backend-cache-max-age' days, and cannot tell that this \
+one is in use.  %s"
+              format-file (error-message-string err)
+              (latex-to-svg-backend--cache-fix)))
      format-file)))
 
 (defun latex-to-svg-backend--build-format (fkey preamble &optional program)
@@ -422,7 +445,8 @@ A preamble that will not dump exits non-zero and yields nil (the caller
 falls back to a full compile, which reports the real LaTeX error).  A
 TeX program that is not found signals `file-missing', which
 `latex-to-svg-backend--ensure-format' handles; one that is found but
-cannot be started is reported once."
+cannot be started is reported once per buffer (see
+`latex-to-svg-backend--warn')."
   (let* ((dir (latex-to-svg-backend--fmt-dir))
          (base (expand-file-name fkey dir))
          (fmt (concat base ".fmt"))
@@ -436,24 +460,31 @@ cannot be started is reported once."
       (with-temp-file pre-tex
         (insert preamble "\n\\dump\n")))
     (message "latex-to-svg-backend: precompiling LaTeX preamble...")
-    (let ((rv (unwind-protect
-                  (condition-case err
-                      (call-process (or program latex-to-svg-backend-latex-program)
-                                    nil buffer nil
-                                    (concat "-output-directory=" dir)
-                                    "-ini"
-                                    (concat "-jobname=" fkey)
-                                    (concat "&" (latex-to-svg-backend--latex-format-name
-                                                 program))
-                                    pre-tex)
-                    (file-missing (signal (car err) (cdr err)))
-                    ;; Found but cannot be started.  Report it once; the
-                    ;; caller falls back to a full compile, which reports
-                    ;; its own failure.
-                    (file-error
-                     (latex-to-svg-backend--warn-once
-                      "dumping the LaTeX preamble" err)))
-                (delete-file pre-tex))))
+    (let* ((tex (or program latex-to-svg-backend-latex-program))
+           (rv (unwind-protect
+                   (condition-case err
+                       (call-process tex
+                                     nil buffer nil
+                                     (concat "-output-directory=" dir)
+                                     "-ini"
+                                     (concat "-jobname=" fkey)
+                                     (concat "&" (latex-to-svg-backend--latex-format-name
+                                                  program))
+                                     pre-tex)
+                     (file-missing (signal (car err) (cdr err)))
+                     ;; Found but cannot be started.  Report it; the
+                     ;; caller falls back to a full compile, which reports
+                     ;; its own failure.
+                     (file-error
+                      (latex-to-svg-backend--warn
+                       "dumping the LaTeX preamble"
+                       (format "Cannot run %s to precompile the LaTeX \
+preamble: %s.
+Make %s executable, or set the engine's program in \
+M-x customize-group RET latex-to-svg-backend."
+                               tex (error-message-string err) tex))
+                      nil))
+                 (delete-file pre-tex))))
       (if (and (eql rv 0) (file-exists-p fmt))
           (progn
             (delete-file log)
@@ -478,10 +509,12 @@ the caller uses a full compile — when precompilation is off, the dump
 fails, or the `.fmt' file has been blocklisted after an earlier
 failure.  When PROGRAM is not found, it returns nil without
 blocklisting, so the compile reports the missing program and the dump
-runs once PROGRAM is installed."
+runs once PROGRAM is installed.  A blocklisted `.fmt' file is reported
+once per buffer (see `latex-to-svg-backend--report-blocked-format')."
   (when latex-to-svg-backend-precompile
     (let ((fkey (latex-to-svg-backend--format-key preamble program)))
-      (unless (gethash fkey latex-to-svg-backend--format-blocklist)
+      (if (gethash fkey latex-to-svg-backend--format-blocklist)
+          (progn (latex-to-svg-backend--report-blocked-format fkey) nil)
         (let ((fmt (latex-to-svg-backend--format-file fkey))
               (latex-bin (latex-to-svg-backend--latex-binary program)))
           (cond
@@ -509,33 +542,54 @@ runs once PROGRAM is installed."
                   ;; session: retrying would run a synchronous `latex -ini'
                   ;; for every equation, and a preamble that will not dump
                   ;; does not start dumping on the next attempt.
-                  (latex-to-svg-backend--block-format fmt)
+                  (latex-to-svg-backend--block-format fmt 'dump)
                   nil)
               (file-missing nil)))))))))
 
-(defun latex-to-svg-backend--block-format (format-file)
+(defun latex-to-svg-backend--block-format (format-file reason &optional key)
   "Abandon FORMAT-FILE and skip precompilation for its preamble this session.
-Deletes the `.fmt' file (if any) and blocklists its key, so
+Deletes the `.fmt' file (if any) and blocklists its key with REASON, so
 `--ensure-format' returns nil for this preamble for the rest of the
-session and the backend falls back to full compiles.  Warns once — one
-warning per preamble, since the blocklist short-circuits every later
-call.
+session and the backend falls back to full compiles.
 
-Called from the two ways precompilation can fail: the dump itself failed
-\(see `latex-to-svg-backend--build-format'; the log stays in the
-`*latex-to-svg-backend-precompile-log*' buffer), or the dump succeeded but a
-compile that loaded it failed.  In the latter case the same equation is
-about to be retried with the full inline preamble, so a genuinely broken
-equation is not mistaken for a broken `.fmt' file."
+Called from the two ways precompilation can fail, which REASON names:
+`dump', the dump itself failed (see `latex-to-svg-backend--build-format';
+the log stays in the `*latex-to-svg-backend-precompile-log*' buffer), or
+`load', the dump succeeded but a compile that loaded it failed.  In the
+latter case the same equation is about to be retried with the full
+inline preamble, so a genuinely broken equation is not mistaken for a
+broken `.fmt' file.
+
+The failure is reported (see `latex-to-svg-backend--report-blocked-format'):
+in the buffers waiting for the content KEY when it is given, as from the
+compile sentinel, else in the current buffer."
   (let ((fkey (file-name-base format-file)))
-    (puthash fkey t latex-to-svg-backend--format-blocklist)
+    (puthash fkey reason latex-to-svg-backend--format-blocklist)
     (remhash fkey latex-to-svg-backend--format-checked)
     (delete-file format-file)
     (delete-file (latex-to-svg-backend--format-stamp-file format-file))
-    (display-warning
-     'latex-to-svg-backend
-     "Precompiled LaTeX preamble failed; falling back to full compiles."
-     :warning)))
+    (latex-to-svg-backend--report-blocked-format fkey key)))
+
+(defun latex-to-svg-backend--report-blocked-format (fkey &optional key)
+  "Warn that the `.fmt' file of FKEY is blocklisted, once per buffer.
+FKEY is a key of `latex-to-svg-backend--format-blocklist'.  The warning
+is shown in the buffers waiting for the content KEY when it is given
+\(see `latex-to-svg-backend--warn-waiters'), else in the current buffer
+\(see `latex-to-svg-backend--warn')."
+  (let ((cause (concat "precompiled preamble failed/" fkey))
+        (message
+         (concat
+          (if (eq (gethash fkey latex-to-svg-backend--format-blocklist) 'dump)
+              "Precompiling the LaTeX preamble into a .fmt file failed; \
+see the buffer *latex-to-svg-backend-precompile-log*."
+            "A compile that loaded the precompiled LaTeX preamble (the .fmt \
+file) failed, and was run again with the full preamble.")
+          "\nUntil the session ends, each equation is compiled with the \
+full preamble, which is slower.  Once the preamble is fixed, \
+M-x latex-to-svg-backend-invalidate-format precompiles it again.")))
+    (if key
+        (latex-to-svg-backend--warn-waiters key cause message)
+      (latex-to-svg-backend--warn cause message))))
 
 ;;;###autoload
 (defun latex-to-svg-backend-flush-format ()
@@ -610,10 +664,16 @@ Called on a successful compile, before DIR is cleaned up."
               (prin1 (list :nums (cons initial final)) (current-buffer)))
           ;; This runs in the compile sentinel, *before* the pending callbacks
           ;; fire: signalling here would leave a successfully compiled equation
-          ;; unplaced.  The sidecar is a cache, so report the failure once and
+          ;; unplaced.  The sidecar is a cache, so report the failure and
           ;; let the equation through.
           (file-error
-           (latex-to-svg-backend--warn-once "writing compile metadata" err)))))))
+           (latex-to-svg-backend--warn-waiters
+            key "writing compile metadata"
+            (format "Cannot write %s: %s.
+The equation's number is lost.  %s"
+                    (latex-to-svg-backend--meta-file key)
+                    (error-message-string err)
+                    (latex-to-svg-backend--cache-fix)))))))))
 
 (defconst latex-to-svg-backend--latex-environment
   '("error_line=254" "half_error_line=238" "max_print_line=1000")
@@ -888,7 +948,7 @@ A theme change therefore re-tints from cache without recompiling."
               ;; with the full inline preamble; keep the pending callback
               ;; queue intact.
               (retry-format
-               (latex-to-svg-backend--block-format format-file))
+               (latex-to-svg-backend--block-format format-file 'load key))
               ;; Genuine failure (full preamble): persist diagnostics.
               (t
                (latex-to-svg-backend--compile-failed

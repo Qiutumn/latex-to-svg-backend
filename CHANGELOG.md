@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Every warning is shown once per buffer per cause, and names the buffer
+  that made the request. Opening the file again shows it again. Before,
+  most warnings were shown once per session and repeated after a day:
+  in an Emacs daemon a user who missed the first one did not see it
+  again for a day, and could not make it appear to check a fix. This
+  covers a missing program, an Emacs without SVG support, the two
+  obsolete options, a `.fmt` file that failed, a project directory TeX
+  cannot read, and a cache directory that cannot be written.
+- A buffer killed before its compile ends gets no warning. Before, a
+  failed compile whose requesting buffers were all killed warned once
+  per session.
+- The cache collector warns each time it cannot write its timestamp,
+  which is every 5 minutes of idle time while the cache directory
+  cannot be written. Before, it warned once a day.
+- Each warning names the cause and how to fix it, for example which
+  option to set. Before, most printed the backend's internal step and
+  the Emacs error.
+- A warning about a failed compile includes the engine's error message.
+
+### Removed
+
+- The warnings about a cache entry that another session's collector
+  deleted while it was read, about an unreadable `.eld` sidecar, about
+  an unreadable `.fmt` stamp, and about an unreadable collector
+  timestamp. The backend rebuilds each of these, so there is nothing for
+  the user to fix. A file that cannot be written back is still reported.
+
 ## [0.15.0] - 2026-10-14
 
 A request that ends without a picture says so: the callback gets the

@@ -119,10 +119,9 @@
 
 (ert-deftest latex-to-svg-backend-warns-once-of-the-obsolete-option ()
   ;; `-render-on-non-graphic' has no effect since 0.14.0, and the feature
-  ;; is no longer supported; set, it is reported once per session, and a
+  ;; is no longer supported; set, it is reported once per buffer, and a
   ;; request still goes ahead.
-  (let ((latex-to-svg-backend--warned (make-hash-table :test 'equal))
-        (warnings nil))
+  (let ((warnings nil))
     (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) #'ignore)
               ((symbol-function 'display-warning)
                (lambda (_type message &rest _) (push message warnings))))
@@ -133,9 +132,14 @@
           (should-not (seq-some (lambda (m) (string-search "obsolete" m))
                                 warnings)))
         (let ((latex-to-svg-backend-render-on-non-graphic t))
-          (latex-to-svg-backend "$x$")
-          (latex-to-svg-backend "$y$")))
-      (should (= 1 (seq-count (lambda (m) (string-search "obsolete" m))
+          (with-temp-buffer
+            (latex-to-svg-backend "$x$")
+            (latex-to-svg-backend "$y$"))
+          (should (= 1 (seq-count (lambda (m) (string-search "obsolete" m))
+                                  warnings)))
+          (with-temp-buffer
+            (latex-to-svg-backend "$x$"))))
+      (should (= 2 (seq-count (lambda (m) (string-search "obsolete" m))
                               warnings)))
       ;; It asks for the workflow that needs it.
       (should (seq-some (lambda (m)
@@ -145,9 +149,8 @@
 
 (ert-deftest latex-to-svg-backend-warns-once-of-svg-dpi ()
   ;; `-svg-dpi' has no effect since 0.14.0: a value other than its default
-  ;; is reported once per session.
-  (let ((latex-to-svg-backend--warned (make-hash-table :test 'equal))
-        (warnings nil))
+  ;; is reported once per buffer.
+  (let ((warnings nil))
     (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) #'ignore)
               ((symbol-function 'display-warning)
                (lambda (_type message &rest _) (push message warnings))))
@@ -155,9 +158,14 @@
         (latex-to-svg-backend "$x$")
         (should-not (seq-some (lambda (m) (string-search "svg-dpi" m)) warnings))
         (let ((latex-to-svg-backend-svg-dpi 144.0))
-          (latex-to-svg-backend "$x$")
-          (latex-to-svg-backend "$y$")))
-      (should (= 1 (seq-count (lambda (m) (string-search "svg-dpi" m))
+          (with-temp-buffer
+            (latex-to-svg-backend "$x$")
+            (latex-to-svg-backend "$y$"))
+          (should (= 1 (seq-count (lambda (m) (string-search "svg-dpi" m))
+                                  warnings)))
+          (with-temp-buffer
+            (latex-to-svg-backend "$x$"))))
+      (should (= 2 (seq-count (lambda (m) (string-search "svg-dpi" m))
                               warnings))))))
 
 ;;;; Scale
@@ -529,7 +537,8 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (ert-deftest latex-to-svg-backend-build-format-reports-unstartable-latex ()
-  ;; A LaTeX program that is found but cannot be started is reported once;
+  ;; A LaTeX program that is found but cannot be started is reported once
+  ;; per buffer;
   ;; the dump still yields nil so the caller falls back to a full compile.
   ;; One that is not found signals `file-missing', for `--ensure-format'
   ;; (see `latex-to-svg-backend-missing-tex-program-not-blocklisted').
@@ -542,7 +551,7 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
                    (lambda (&rest _) (signal (car err) (cdr err))))
                   ((symbol-function 'display-warning)
                    (lambda (&rest _) (cl-incf warnings))))
-          (clrhash latex-to-svg-backend--warned)
+          (setq latex-to-svg-backend--warned nil)
           (should-not (latex-to-svg-backend--build-format "deadbeef" (latex-to-svg-backend--preamble)))
           (should-not (latex-to-svg-backend--build-format "deadbeef" (latex-to-svg-backend--preamble)))
           (should (= 1 warnings))
@@ -554,98 +563,89 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
           (should-not (directory-files (latex-to-svg-backend--fmt-dir) nil "\\.tex\\'")))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
-(ert-deftest latex-to-svg-backend-warn-once-reports-each-type-once ()
-  ;; A recovered error is reported, but only the first of each kind: one
-  ;; warning per context/condition pair, not one per equation.
-  (let ((warnings 0))
+;; A warning is shown once per buffer per cause, with no expiry: opening
+;; the file again shows it again.
+(ert-deftest latex-to-svg-backend-warn-is-once-per-buffer-per-cause ()
+  (let ((warnings nil))
     (cl-letf (((symbol-function 'display-warning)
-               (lambda (&rest _) (cl-incf warnings))))
-      (clrhash latex-to-svg-backend--warned)
-      (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope"))
-      (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope"))
-      (should (= 1 warnings))
-      ;; A different condition in the same context is its own diagnosis.
-      (latex-to-svg-backend--warn-once "touching" '(file-error "Other"))
-      (should (= 2 warnings))
-      ;; So is the same condition somewhere else.
-      (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-      (should (= 3 warnings))
-      ;; Returns nil, so it can tail a recovery handler.
-      (should-not (latex-to-svg-backend--warn-once "touching" '(file-error "Other"))))))
+               (lambda (_type message &rest _) (push message warnings))))
+      (with-temp-buffer
+        (rename-buffer "notes.org" t)
+        (should (latex-to-svg-backend--warn "touching" "Cannot touch."))
+        (should-not (latex-to-svg-backend--warn "touching" "Cannot touch."))
+        (should (equal warnings (list (concat (buffer-name) ": Cannot touch."))))
+        ;; Another cause in the same buffer is its own warning.
+        (latex-to-svg-backend--warn "writing" "Cannot write.")
+        (should (= 2 (length warnings))))
+      ;; Another buffer is told again.
+      (with-temp-buffer
+        (latex-to-svg-backend--warn "touching" "Cannot touch.")
+        (should (= 3 (length warnings)))))))
 
-(ert-deftest latex-to-svg-backend-warn-once-rearms-when-stale ()
-  ;; A warning from weeks ago says nothing about whether the problem is still
-  ;; there, so a mark goes stale after the interval -- in both scopes.  Time is
-  ;; stubbed rather than waited for.
+(ert-deftest latex-to-svg-backend-warn-does-not-expire ()
+  ;; A warning that came back after a day could not be reproduced.
   (let ((warnings 0)
         (now 1000000.0))
     (cl-letf (((symbol-function 'display-warning)
                (lambda (&rest _) (cl-incf warnings)))
               ((symbol-function 'float-time) (lambda (&rest _) now)))
-      (clrhash latex-to-svg-backend--warned)
-      ;; Session scope: reported once, then quiet.
-      (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-      (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-      (should (= 1 warnings))
-      ;; Exactly at the interval is still quiet.
-      (setq now (+ now latex-to-svg-backend--warn-interval))
-      (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-      (should (= 1 warnings))
-      ;; Past it: the problem is still there, so say so again.
-      (setq now (+ now 1))
-      (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-      (should (= 2 warnings))
-      ;; ... and only once more, until it goes stale again.
-      (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-      (should (= 2 warnings))
-      ;; Buffer scope ages the same way, for a document left open for days.
       (with-temp-buffer
-        (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope") 'buffer)
-        (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope") 'buffer)
-        (should (= 3 warnings))
-        (setq now (+ now latex-to-svg-backend--warn-interval 1))
-        (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope") 'buffer)
-        (should (= 4 warnings))))))
+        (latex-to-svg-backend--warn "touching" "Cannot touch.")
+        (setq now (+ now (* 30 86400)))
+        (latex-to-svg-backend--warn "touching" "Cannot touch.")
+        (should (= 1 warnings))))))
 
-(ert-deftest latex-to-svg-backend-warn-once-buffer-scope-repeats-per-document ()
-  ;; A persistent problem should be re-reported for each document opened -- a
-  ;; single warning is easily missed in a server that runs for weeks -- while
-  ;; equations within one buffer still share one warning.
-  (let ((warnings 0))
+(ert-deftest latex-to-svg-backend-warn-skips-a-killed-requester ()
+  ;; Work done for a killed buffer warns nowhere: nobody is looking.
+  (let ((warnings 0)
+        (dead (generate-new-buffer " dead")))
+    (kill-buffer dead)
     (cl-letf (((symbol-function 'display-warning)
                (lambda (&rest _) (cl-incf warnings))))
-      (clrhash latex-to-svg-backend--warned)
       (with-temp-buffer
-        (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope") 'buffer)
-        (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope") 'buffer)
+        (latex-to-svg-backend--with-requester dead
+          (latex-to-svg-backend--warn "touching" "Cannot touch."))
+        (should (= 0 warnings))
+        ;; A live requester is made current, and warns.
+        (let ((live (current-buffer)))
+          (with-temp-buffer
+            (latex-to-svg-backend--with-requester live
+              (should (eq (current-buffer) live))
+              (latex-to-svg-backend--warn "touching" "Cannot touch."))))
         (should (= 1 warnings))
-        ;; The mark is the buffer's own, so renaming it is not a new document.
-        (rename-buffer "renamed.org")
-        (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope") 'buffer)
-        (should (= 1 warnings))
-        ;; A different condition in the same buffer is its own diagnosis.
-        (latex-to-svg-backend--warn-once "touching" '(file-error "Other") 'buffer)
-        (should (= 2 warnings)))
-      ;; Another document: told again -- even one named identically, since the
-      ;; mark died with the previous buffer rather than lingering under its name.
-      (with-temp-buffer
-        (latex-to-svg-backend--warn-once "touching" '(permission-denied "Nope") 'buffer)
-        (should (= 3 warnings)))
-      ;; Session scope ignores the buffer entirely: sentinel and idle-timer
-      ;; sites must not multiply per document.
-      (with-temp-buffer
-        (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-        (should (= 4 warnings)))
-      (with-temp-buffer
-        (latex-to-svg-backend--warn-once "writing" '(permission-denied "Nope"))
-        (should (= 4 warnings)))
-      ;; And a buffer-scoped mark does not leak into the session table.
-      (should (= 1 (hash-table-count latex-to-svg-backend--warned))))))
+        (should (member "touching" latex-to-svg-backend--warned))))))
+
+(ert-deftest latex-to-svg-backend-warn-waiters-warns-in-each-live-buffer ()
+  ;; From a sentinel, a warning goes to the buffers that requested the
+  ;; compile: each live one once, a killed one not at all.
+  (let ((latex-to-svg-backend--pending (make-hash-table :test 'equal))
+        (warnings nil)
+        (a (generate-new-buffer "a.org"))
+        (b (generate-new-buffer "b.org"))
+        (dead (generate-new-buffer "dead.org")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-warning)
+                   (lambda (_type message &rest _) (push message warnings))))
+          (kill-buffer dead)
+          (puthash "k" (mapcar (lambda (buffer)
+                                 (with-current-buffer buffer
+                                   (latex-to-svg-backend--waiter #'ignore)))
+                               (list a a b))
+                   latex-to-svg-backend--pending)
+          (puthash "k" (cons (list :buffer dead)
+                             (gethash "k" latex-to-svg-backend--pending))
+                   latex-to-svg-backend--pending)
+          (with-temp-buffer
+            (latex-to-svg-backend--warn-waiters "k" "writing" "Cannot write."))
+          (should (equal (sort warnings #'string<)
+                         '("a.org: Cannot write." "b.org: Cannot write."))))
+      (kill-buffer a)
+      (kill-buffer b))))
 
 (ert-deftest latex-to-svg-backend-touch-warns-once-when-refused ()
   ;; An unwritable cache entry (root-owned after a run under sudo, or a
   ;; read-only mount) must not break the display path -- the mtime is only a
-  ;; GC hint -- but it is reported once, never silently dropped.
+  ;; GC hint -- but it is reported once per buffer, never silently dropped.
   (let ((warnings 0))
     (cl-letf (((symbol-function 'set-file-times)
                (lambda (&rest _)
@@ -654,10 +654,10 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
                                "/cache/ab/cdef.svg"))))
               ((symbol-function 'display-warning)
                (lambda (&rest _) (cl-incf warnings))))
-      (clrhash latex-to-svg-backend--warned)
-      (should-not (latex-to-svg-backend--touch "/cache/ab/cdef.svg"))
-      (should-not (latex-to-svg-backend--touch "/cache/ab/cdef.svg"))
-      (should (= 1 warnings)))))
+      (with-temp-buffer
+        (latex-to-svg-backend--touch "/cache/ab/cdef.svg")
+        (latex-to-svg-backend--touch "/cache/ab/cdef.svg")
+        (should (= 1 warnings))))))
 
 (ert-deftest latex-to-svg-backend-touch-signals-when-file-vanished ()
   ;; `--touch' does not swallow errors: a collected entry signals
@@ -693,18 +693,21 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
 
 (ert-deftest latex-to-svg-backend-warns-once-without-svg-support ()
   ;; Without SVG support the entry point yields nil (the caller keeps the
-  ;; LaTeX source), schedules no compile, and warns once per session, even
+  ;; LaTeX source), schedules no compile, and warns once per buffer, even
   ;; for a quiet request.
-  (let ((latex-to-svg-backend--warned (make-hash-table :test 'equal))
-        (warnings 0))
+  (let ((warnings 0))
     (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) #'ignore)
               ((symbol-function 'latex-to-svg-backend--enqueue)
                (lambda (&rest _) (error "Compiled without SVG support")))
               ((symbol-function 'display-warning)
                (lambda (&rest _) (cl-incf warnings))))
-      (should-not (latex-to-svg-backend "$E=mc^2$" :callback #'ignore :quiet t))
-      (should-not (latex-to-svg-backend "$x$" :callback #'ignore))
-      (should (= warnings 1)))))
+      (with-temp-buffer
+        (should-not (latex-to-svg-backend "$E=mc^2$" :callback #'ignore :quiet t))
+        (should-not (latex-to-svg-backend "$x$" :callback #'ignore))
+        (should (= warnings 1)))
+      (with-temp-buffer
+        (latex-to-svg-backend "$x$" :callback #'ignore)
+        (should (= warnings 2))))))
 
 (ert-deftest latex-to-svg-backend-schedules-and-coalesces-compiles ()
   ;; Renderable, tools present, SVG not yet on disk: the entry point returns
@@ -806,7 +809,6 @@ completion event."
           (latex-to-svg-backend-jobs 100)
           (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
           (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
-          (latex-to-svg-backend--warned (make-hash-table :test 'equal))
           (l2s-test-processes nil)
           (l2s-test-missing nil)
           (l2s-test-warnings nil))
@@ -1136,13 +1138,13 @@ completion event."
                      (sort (list (nth 1 keys) (nth 2 keys)) #'string<))))))
 
 (ert-deftest latex-to-svg-backend-compile-that-cannot-start-frees-its-slot ()
-  ;; A compile that signals as it starts is reported once and ended, so
+  ;; A compile that signals as it starts is reported in the buffer waiting
+  ;; for it and ended, so
   ;; its slot goes to the next one and a later request compiles again.
   (let ((latex-to-svg-backend-jobs 1)
         (latex-to-svg-backend--pending (make-hash-table :test 'equal))
         (latex-to-svg-backend--queue nil)
         (latex-to-svg-backend--running nil)
-        (latex-to-svg-backend--warned (make-hash-table :test 'equal))
         (warnings nil)
         (started nil))
     (cl-letf (((symbol-function 'display-warning)
@@ -1316,33 +1318,33 @@ kept for symmetry with the compile pipeline."
 (ert-deftest latex-to-svg-backend-metadata-missing-and-corrupt-yield-nil ()
   ;; No sidecar => nil, and nothing to report (an equation compiled before the
   ;; prefix was set simply has none).  A half-written / corrupt sidecar => nil
-  ;; too, but that one is reported -- once, not per query.
+  ;; too, with no warning: it is cache, and the entry is rebuilt.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-meta-bad" t))
         (warnings 0))
     (unwind-protect
         (cl-letf (((symbol-function 'display-warning)
                    (lambda (&rest _) (cl-incf warnings))))
-          (clrhash latex-to-svg-backend--warned)
+          (setq latex-to-svg-backend--warned nil)
           (should-not (latex-to-svg-backend-metadata "$never$"))
           (should (= 0 warnings))
           (with-temp-file (latex-to-svg-backend--meta-file (latex-to-svg-backend--cache-key "$x$"))
             (insert "(:nums (3 . "))    ; truncated, unreadable
           (should-not (latex-to-svg-backend-metadata "$x$"))
           (should-not (latex-to-svg-backend-metadata "$x$"))
-          (should (= 1 warnings)))
+          (should (= 0 warnings)))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (ert-deftest latex-to-svg-backend-unreadable-sidecar-regenerates-the-entry ()
   ;; Only a compile can rewrite a metadata sidecar, and a cached SVG means no
   ;; compile ever happens -- so an unreadable sidecar would cost the equation
   ;; its metadata permanently.  Discard the entry instead: the next render
-  ;; rebuilds both.
+  ;; rebuilds both.  That is a cache rebuilding itself, so nothing is reported.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-meta-fix" t))
         (warnings 0))
     (unwind-protect
         (cl-letf (((symbol-function 'display-warning)
                    (lambda (&rest _) (cl-incf warnings))))
-          (clrhash latex-to-svg-backend--warned)
+          (setq latex-to-svg-backend--warned nil)
           (clrhash latex-to-svg-backend--metadata-repaired)
           (clrhash latex-to-svg-backend--image-cache)
           (let* ((latex "$x$")
@@ -1355,68 +1357,84 @@ kept for symmetry with the compile pipeline."
             (puthash (concat key "@0.8@#000000@nil@nil") 'IMG
                      latex-to-svg-backend--image-cache)
             (should-not (latex-to-svg-backend-metadata latex))
-            (should (= 1 warnings))
+            (should (= 0 warnings))
             ;; Entry gone: SVG, sidecar, and the warm image.
             (should-not (file-exists-p meta))
             (should-not (file-exists-p svg))
             (should (= 0 (hash-table-count latex-to-svg-backend--image-cache)))
             ;; At most one repair per equation: if a freshly written sidecar
             ;; came back unreadable too, this must not recompile on every
-            ;; query.  Reported already, so the count stays at one.
+            ;; query.
             (with-temp-file svg (insert "<svg/>"))
             (with-temp-file meta (insert "(:nums (3 . "))
             (should-not (latex-to-svg-backend-metadata latex))
             (should (file-exists-p svg))
-            (should (= 1 warnings))))
+            (should (= 0 warnings))))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (ert-deftest latex-to-svg-backend-write-metadata-failure-lets-the-equation-through ()
   ;; --write-metadata runs in the compile sentinel, before the pending
   ;; callbacks fire: a sidecar it cannot write must be reported, not signalled,
-  ;; or a successfully compiled equation would never be placed.
+  ;; or a successfully compiled equation would never be placed.  It is
+  ;; reported in the buffer that requested the compile, once.
   (let ((latex-to-svg-backend-metadata-prefix "L2S")
+        (latex-to-svg-backend--pending (make-hash-table :test 'equal))
         (dir (make-temp-file "l2s-meta-w" t))
-        (warnings 0))
+        (warnings nil))
     (unwind-protect
-        (progn
+        (with-temp-buffer
+          (puthash "K" (list (latex-to-svg-backend--waiter #'ignore))
+                   latex-to-svg-backend--pending)
           (with-temp-file (expand-file-name "equation.log" dir) (insert "L2S 42\n"))
           (cl-letf (((symbol-function 'latex-to-svg-backend--meta-file)
                      (lambda (&rest _) "/l2s-no-such-dir-9182/x.eld"))
                     ((symbol-function 'display-warning)
-                     (lambda (&rest _) (cl-incf warnings))))
-            (clrhash latex-to-svg-backend--warned)
-            (latex-to-svg-backend--write-metadata "K" dir 3)
-            (latex-to-svg-backend--write-metadata "K" dir 3)
-            (should (= 1 warnings))))
+                     (lambda (_type message &rest _) (push message warnings))))
+            (let ((requester (current-buffer)))
+              (with-temp-buffer
+                (latex-to-svg-backend--write-metadata "K" dir 3)
+                (latex-to-svg-backend--write-metadata "K" dir 3))
+              (should (= 1 (length warnings)))
+              (should (string-prefix-p (buffer-name requester) (car warnings))))))
       (delete-directory dir t))))
 
-(ert-deftest latex-to-svg-backend-unusable-gc-stamp-is-reported-and-self-heals ()
+(ert-deftest latex-to-svg-backend-unusable-gc-stamp-self-heals ()
   ;; The GC cadence stamp: an unusable one means "never collected", so the next
-  ;; GC runs and rewrites it.  Each *kind* of corruption is reported once.
+  ;; GC runs and rewrites it.  That is a cache rebuilding itself: no warning.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-gc-stamp" t))
         (warnings 0))
     (unwind-protect
         (cl-letf (((symbol-function 'display-warning)
                    (lambda (&rest _) (cl-incf warnings))))
-          (clrhash latex-to-svg-backend--warned)
           ;; Never collected: not an error.
           (should (= 0 (latex-to-svg-backend--last-gc-time)))
-          (should (= 0 warnings))
           ;; Truncated by a crash mid-write.
           (with-temp-file (latex-to-svg-backend--gc-stamp-file) (insert "(12345"))
           (should (= 0 (latex-to-svg-backend--last-gc-time)))
-          (should (= 0 (latex-to-svg-backend--last-gc-time)))
-          (should (= 1 warnings))
-          ;; Parses, but is not a time -- a different diagnosis, so it is
-          ;; reported too (once).
+          ;; Parses, but is not a time.
           (with-temp-file (latex-to-svg-backend--gc-stamp-file) (insert "yesterday"))
           (should (= 0 (latex-to-svg-backend--last-gc-time)))
-          (should (= 0 (latex-to-svg-backend--last-gc-time)))
-          (should (= 2 warnings))
           ;; Self-healing: a GC rewrites a usable stamp.
           (latex-to-svg-backend--record-gc-time)
           (should (> (latex-to-svg-backend--last-gc-time) 0))
-          (should (= 2 warnings)))
+          (should (= 0 warnings)))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
+(ert-deftest latex-to-svg-backend-unwritable-gc-stamp-warns-each-time ()
+  ;; No buffer requests the GC, so there is none to mark: a stamp that cannot
+  ;; be written warns at every collection.
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-gc-stamp" t))
+        (warnings nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'latex-to-svg-backend--gc-stamp-file)
+                   (lambda () "/l2s-no-such-dir-9182/gc-timestamp"))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type message &rest _) (push message warnings))))
+          (latex-to-svg-backend--record-gc-time)
+          (latex-to-svg-backend--record-gc-time)
+          (should (= 2 (length warnings)))
+          (should (string-search "latex-to-svg-backend-cache-directory"
+                                 (car warnings))))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (ert-deftest latex-to-svg-backend-metadata-captured-from-real-compile ()
@@ -1569,9 +1587,9 @@ kept for symmetry with the compile pipeline."
                (fmt (latex-to-svg-backend--format-file fkey)))
           (with-temp-file fmt (insert "fmt"))
           (cl-letf (((symbol-function 'display-warning) #'ignore))
-            (latex-to-svg-backend--block-format fmt))
+            (latex-to-svg-backend--block-format fmt 'dump))
           (should-not (file-exists-p fmt))
-          (should (gethash fkey latex-to-svg-backend--format-blocklist))
+          (should (eq 'dump (gethash fkey latex-to-svg-backend--format-blocklist)))
           ;; Blocklisted => ensure-format yields nil without rebuilding.
           (cl-letf (((symbol-function 'latex-to-svg-backend--build-format)
                      (lambda (_k _preamble &optional _program) (error "must not dump a blocklisted .fmt file"))))
@@ -2288,8 +2306,8 @@ NEWEST is a function returning the most recently started fake process."
         (should (= 1 (length timers)))))))
 
 (ert-deftest latex-to-svg-backend-missing-program-warns-and-retries ()
-  ;; A program that is not found: the request returns nil, one warning
-  ;; names the engine and the program, even for a quiet request, and
+  ;; A program that is not found: the request returns nil, one warning per
+  ;; buffer names the engine and the program, even for a quiet request, and
   ;; nothing is recorded, so the next request runs the program again and
   ;; compiles once it is installed.
   (latex-to-svg-backend-tests--with-public-api
@@ -2310,6 +2328,10 @@ NEWEST is a function returning the most recently started fake process."
       (should-not latex-to-svg-backend--running)
       (should-not (latex-to-svg-backend "$y$" :engine 'ratex :callback #'ignore))
       (should (= 1 (length l2s-test-warnings)))
+      ;; Another buffer is told again.
+      (with-temp-buffer
+        (latex-to-svg-backend "$z$" :engine 'ratex :callback #'ignore))
+      (should (= 2 (funcall missing)))
       (setq l2s-test-missing nil)
       (latex-to-svg-backend "$x$" :engine 'ratex :callback #'ignore)
       (should (= 1 (length l2s-test-processes))))))
@@ -2387,7 +2409,6 @@ NEWEST is a function returning the most recently started fake process."
          (latex-to-svg-backend-latex-program "l2s-no-such-latex")
          (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
          (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
-         (latex-to-svg-backend--warned (make-hash-table :test 'equal))
          (warnings nil))
     (unwind-protect
         (cl-letf (((symbol-function 'display-warning)
@@ -2408,7 +2429,7 @@ NEWEST is a function returning the most recently started fake process."
 (ert-deftest latex-to-svg-backend-failure-warns-per-requesting-buffer ()
   ;; Two buffers wait on one compile: each is told, by name.  A killed one
   ;; is skipped, a quiet one is not told, and with no requesting buffer
-  ;; left the warning is once per session.
+  ;; left nobody is.
   (latex-to-svg-backend-tests--with-public-api
     (let ((a (generate-new-buffer "notes.md"))
           (b (generate-new-buffer "chat"))
@@ -2424,7 +2445,7 @@ NEWEST is a function returning the most recently started fake process."
             (kill-buffer d)
             (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
             (should (equal (sort (mapcar (lambda (w)
-                                           (and (string-match " in \\([^ ]+\\) for:" (nth 1 w))
+                                           (and (string-match "\\`\\([^:]+\\): " (nth 1 w))
                                                 (match-string 1 (nth 1 w))))
                                          l2s-test-warnings)
                                  #'string<)
@@ -2435,14 +2456,13 @@ NEWEST is a function returning the most recently started fake process."
               (latex-to-svg-backend "$\\SI{3}{m}$" :engine 'ratex :callback #'ignore)
               (latex-to-svg-backend "$\\SI{3}{m}$" :engine 'ratex :callback #'ignore)
               (should (= 3 (length l2s-test-warnings))))
-            ;; Every requesting buffer killed: one warning for the session.
+            ;; Every requesting buffer killed: no warning.
             (let ((e (generate-new-buffer "e")))
               (with-current-buffer e
                 (latex-to-svg-backend "$\\SI{4}{m}$" :engine 'ratex :callback #'ignore))
               (kill-buffer e)
               (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
-              (should (= 4 (length l2s-test-warnings)))
-              (should-not (string-search " in " (nth 1 (car l2s-test-warnings))))))
+              (should (= 3 (length l2s-test-warnings)))))
         (mapc #'kill-buffer (seq-filter #'buffer-live-p (list a b c)))))))
 
 (ert-deftest latex-to-svg-backend-failure-warns-once-per-equation ()
@@ -2650,7 +2670,6 @@ LINE of LATEX counted in the source the compile wrote."
   (let ((latex-to-svg-backend--pending (make-hash-table :test 'equal))
         (latex-to-svg-backend--queue nil)
         (latex-to-svg-backend--running nil)
-        (latex-to-svg-backend--warned (make-hash-table :test 'equal))
         (outcomes nil))
     (cl-letf (((symbol-function 'display-warning) #'ignore))
       (puthash "a" (list (latex-to-svg-backend--waiter (lambda (o) (push o outcomes))))
@@ -2665,8 +2684,7 @@ LINE of LATEX counted in the source the compile wrote."
 (ert-deftest latex-to-svg-backend-no-svg-support-is-a-setup-failure ()
   ;; Without SVG support nothing compiles, and the callback gets the
   ;; failure after the request returned.
-  (let ((latex-to-svg-backend--warned (make-hash-table :test 'equal))
-        (timers nil)
+  (let ((timers nil)
         (outcomes nil))
     (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) #'ignore)
               ((symbol-function 'display-warning) #'ignore)
@@ -2779,7 +2797,6 @@ LATEX and OFFSET are as for `latex-to-svg-backend--latex-formula-error'."
   ;; with the saved log's path.  It is written as UTF-8, since a message
   ;; can quote the equation.  A record from 0.14.0 reads with nil fields.
   (let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-record" t))
-         (latex-to-svg-backend--warned (make-hash-table :test 'equal))
          (dir (make-temp-file "l2s-record-src" t))
          (key (latex-to-svg-backend--cache-key "$x^2 + \u03b1$"))
          (old (latex-to-svg-backend--cache-key "$old$"))
@@ -3208,24 +3225,28 @@ and one in a formula's own black.")
 
 (ert-deftest latex-to-svg-backend-input-directory-refuses-unusable-directories ()
   ;; A directory TeX would read as code, or one on another host, gets no
-  ;; `\input@path' line; each refusal is reported once.
+  ;; `\input@path' line; each refusal is reported once per buffer.
   (latex-to-svg-backend-tests--outside-a-project
-    (let ((latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}")
-          (latex-to-svg-backend--warned (make-hash-table :test 'equal))
-          (warnings nil))
-      (cl-letf (((symbol-function 'display-warning)
-                 (lambda (&rest w) (push w warnings))))
-        (dolist (dir '("/tmp/50%/" "/tmp/a{b}/" "/tmp/x#1/" "/tmp/a~b/"
-                       "/tmp/back\\slash/"))
-          (let ((default-directory dir))
+    (with-temp-buffer
+      (let ((latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}")
+            (warnings nil))
+        (cl-letf (((symbol-function 'display-warning)
+                   (lambda (&rest w) (push w warnings))))
+          (dolist (dir '("/tmp/50%/" "/tmp/a{b}/" "/tmp/x#1/" "/tmp/a~b/"
+                         "/tmp/back\\slash/"))
+            (let ((default-directory dir))
+              (should (equal (latex-to-svg-backend--not-precompiled)
+                             "\\input{macros.tex}"))))
+          (should (= 1 (length warnings)))
+          (let ((default-directory "/ssh:host:/home/me/paper/"))
             (should (equal (latex-to-svg-backend--not-precompiled)
-                           "\\input{macros.tex}"))))
-        (should (= 1 (length warnings)))
-        (let ((default-directory "/ssh:host:/home/me/paper/"))
-          (should (equal (latex-to-svg-backend--not-precompiled)
-                         "\\input{macros.tex}")))
-        (should (= 2 (length warnings)))
-        (should (string-match-p "remote" (nth 1 (car warnings))))))))
+                           "\\input{macros.tex}")))
+          (should (= 2 (length warnings)))
+          (should (string-match-p "remote" (nth 1 (car warnings))))
+          (with-temp-buffer
+            (let ((default-directory "/ssh:host:/home/me/paper/"))
+              (latex-to-svg-backend--not-precompiled)))
+          (should (= 3 (length warnings))))))))
 
 (ert-deftest latex-to-svg-backend-compile-writes-the-not-precompiled-text ()
   ;; The not-precompiled text goes before `\begin{document}': after the `%&' line
@@ -3562,10 +3583,10 @@ The binary is bound to `binary'; the dump is stubbed to write the
       (should (= builds 4)))))
 
 (ert-deftest latex-to-svg-backend-unreadable-format-stamp-dumps-again ()
-  ;; A truncated stamp is reported once and treated as stale.
+  ;; A truncated stamp is treated as stale, with no warning: the dump
+  ;; writes a new one.
   (latex-to-svg-backend-tests--with-format-cache
-    (let ((latex-to-svg-backend--warned (make-hash-table :test 'equal))
-          (warnings 0)
+    (let ((warnings 0)
           (fmt (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble))))
       (with-temp-file (latex-to-svg-backend--format-stamp-file fmt)
         (insert "(:binary \"/x"))
@@ -3574,7 +3595,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
                  (lambda (&rest _) (cl-incf warnings))))
         (should (equal fmt (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble)))))
       (should (= builds 2))
-      (should (= warnings 1)))))
+      (should (= warnings 0)))))
 
 (ert-deftest latex-to-svg-backend-build-format-writes-the-stamp ()
   ;; The dump runs `latex -ini' on the preamble followed by TeX's `\dump',
@@ -3640,7 +3661,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
            (stamp (latex-to-svg-backend--format-stamp-file fmt))
            (other (latex-to-svg-backend--format-file "other")))
       (cl-letf (((symbol-function 'display-warning) #'ignore))
-        (latex-to-svg-backend--block-format fmt))
+        (latex-to-svg-backend--block-format fmt 'load))
       (should-not (file-exists-p stamp))
       (with-temp-file other (insert "fmt"))
       (latex-to-svg-backend--write-format-stamp other binary)

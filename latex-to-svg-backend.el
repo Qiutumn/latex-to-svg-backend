@@ -248,7 +248,8 @@ The compile waits for a slot (see `latex-to-svg-backend--schedule') and
 may start from the sentinel of another compile.  So INPUTS, nil meaning
 the current buffer's, is read now, and the compile starts in WAITER's
 requesting buffer while that is live, where it reads the options that
-INPUTS does not hold."
+INPUTS does not hold; when it was killed, the compile reports nothing
+\(see `latex-to-svg-backend--with-requester')."
   (let ((pending (gethash key latex-to-svg-backend--pending))
         (inputs (or inputs (latex-to-svg-backend--inputs)))
         (buffer (plist-get waiter :buffer)))
@@ -257,7 +258,7 @@ INPUTS does not hold."
       (latex-to-svg-backend--schedule
        key
        (lambda ()
-         (with-current-buffer (if (buffer-live-p buffer) buffer (current-buffer))
+         (latex-to-svg-backend--with-requester buffer
            (pcase-exhaustive engine
              ((or 'nil 'latex)
               (latex-to-svg-backend--compile key latex metadata inputs))
@@ -281,7 +282,9 @@ nil, but it is not left to rot: only a compile can rewrite it, and the
 cached SVG would keep any compile from happening, so the whole cache
 entry is discarded (`latex-to-svg-backend--invalidate-key') and the next
 render rebuilds both the SVG and the sidecar.  Done at most once per
-equation per session."
+equation per session, with no warning: the sidecar is cache, and the
+backend rebuilds it.  A sidecar that cannot be read at all is reported
+once per buffer (see `latex-to-svg-backend--warn')."
   (let ((file (latex-to-svg-backend--meta-file key)))
     (when (file-readable-p file)
       (condition-case err
@@ -292,8 +295,6 @@ equation per session."
             (read (current-buffer)))
         ;; Unreadable syntax: repairable, by making the entry compile again.
         ((end-of-file invalid-read-syntax)
-         (latex-to-svg-backend--warn-once
-          "discarding an unreadable metadata sidecar" err)
          (unless (gethash key latex-to-svg-backend--metadata-repaired)
            (puthash key t latex-to-svg-backend--metadata-repaired)
            (latex-to-svg-backend--invalidate-key key))
@@ -301,8 +302,13 @@ equation per session."
         ;; Not repairable by recompiling -- and the deletions that a repair
         ;; would attempt are exactly what is failing here.  Report it.
         (file-error
-         (latex-to-svg-backend--warn-once
-          "reading compile metadata" err 'buffer))))))
+         (latex-to-svg-backend--warn
+          "reading compile metadata"
+          (format "Cannot read %s: %s.
+The equation's number, or the record of its failed compile, is lost.
+Make the file readable, or set `latex-to-svg-backend-cache-directory' \
+to another directory."
+                  file (error-message-string err))))))))
 
 (defun latex-to-svg-backend--failed-p (key)
   "Return non-nil when the equation of KEY has a failure record.
@@ -416,9 +422,10 @@ is announced with a message naming how many fell back.
 A failed compile warns once per equation per buffer, naming the buffer
 and linking to the log; QUIET non-nil drops that warning for this call.
 A program that is not found, ENGINE's or FALLBACK's, still warns, once
-per session per engine and program; the request then returns nil, and
+per buffer per engine and program; the request then returns nil, and
 the next request runs the program again.  An Emacs that cannot display
-SVG images also warns, once per session, even with QUIET.
+SVG images also warns, once per buffer, even with QUIET.  A buffer
+killed before its compile ends gets no warning.
 
 METADATA, when non-nil and `latex-to-svg-backend-metadata-prefix' is set, is the
 INITIAL value stored in this equation's `.eld' sidecar (see
@@ -482,7 +489,7 @@ Returns immediately with:
     when ENGINE failed;
   * nil when this Emacs cannot display SVG images (see
     `latex-to-svg-backend-available-p'), with a warning once per
-    session; nothing is compiled and the caller keeps the LaTeX source;
+    buffer; nothing is compiled and the caller keeps the LaTeX source;
   * nil when ENGINE failed and there is no FALLBACK picture.
 
 When the equation is not yet compiled, returns nil and
@@ -561,7 +568,7 @@ Call within the target buffer: the engines read their options there (see
            ((null fallback)
             (unless quiet
               (latex-to-svg-backend--report-failure
-               key latex engine (current-buffer)))
+               key latex engine (plist-get failure :message)))
             (latex-to-svg-backend--call-back callback failure)
             nil)
            (t
@@ -633,13 +640,11 @@ buffer; this takes it from a caller that computed it elsewhere."
     (dolist (k stale)
       (remhash k latex-to-svg-backend--image-cache))
     (let ((seen (concat "compile failed/" key)))
-      (remhash seen latex-to-svg-backend--warned)
       (dolist (buffer (buffer-list))
         (with-current-buffer buffer
-          (when (assoc seen latex-to-svg-backend--warned-in-buffer)
-            (setq latex-to-svg-backend--warned-in-buffer
-                  (assoc-delete-all
-                   seen latex-to-svg-backend--warned-in-buffer))))))))
+          (when (member seen latex-to-svg-backend--warned)
+            (setq latex-to-svg-backend--warned
+                  (delete seen latex-to-svg-backend--warned))))))))
 
 ;;;###autoload
 (defun latex-to-svg-backend-metadata (latex &optional engine)

@@ -63,7 +63,7 @@ Equation numbering used to be the gap: the AUCTeX-based packages compile a whole
   - RaTeX: its `render-svg` program, v0.1.14 or later. No TeX installation. What [Engines](#engines) says about RaTeX was checked with v0.1.14.
   - texres: `texres` 0.7.7 or later, and `pdftocairo` from Poppler. No TeX Live installation. texres 0.7.7 fixed the dump of the `.fmt` file; with an older texres every equation compiles with the full preamble.
 
-  When a program of the requested engine is not found, the backend warns once per session, naming the engine and the program, and the request returns `nil`. Nothing is recorded: the next request runs the program again, so an equation compiles once the program is installed.
+  When a program of the requested engine is not found, the backend warns once per buffer, naming the engine and the program, and the request returns `nil`. Nothing is recorded: the next request runs the program again, so an equation compiles once the program is installed.
 
 ## Installation
 
@@ -199,7 +199,7 @@ Helpers a front-end typically needs for its refresh policy:
 
 | Function | Purpose |
 | --- | --- |
-| `latex-to-svg-backend-available-p` | whether this Emacs can display SVG images (built with librsvg). Without it a request compiles nothing, returns `nil` and warns once per session. It depends on the build, not on a frame: whether to request a render for a buffer shown only on a terminal is the front-end's decision |
+| `latex-to-svg-backend-available-p` | whether this Emacs can display SVG images (built with librsvg). Without it a request compiles nothing, returns `nil` and warns once per buffer. It depends on the build, not on a frame: whether to request a render for a buffer shown only on a terminal is the front-end's decision |
 | `latex-to-svg-backend-tools-available-p` | the programs of an engine on `exec-path`: `latex` + `dvisvgm`, `render-svg` with the argument `ratex`, or `texres` + `pdftocairo` with `texres`. A request does not call it: it runs the programs, and a missing one is warned about |
 | `latex-to-svg-backend-image-width` | the width in pixels at which an image the backend returned is displayed: its `:width`, at `:scale` 1.0 |
 | `latex-to-svg-backend-invalidate` | forget a cached render (delete its on-disk SVG + in-memory images, and its `.eld` sidecar) so the next call recompiles — an escape hatch for a stale/corrupt cache, and the way to retry a failed compile; an optional second argument names the engine, as for `:engine` |
@@ -221,9 +221,9 @@ Using TeX's baseline for the `:ascent` follows `org-latex-preview` in [the fork 
 
 ### Failed compiles and the fallback engine
 
-When an engine rejects the formula — RaTeX cannot parse it, or LaTeX stops on an error in the document — the failure is recorded in the equation's `.eld` sidecar as `(:failed t :kind formula :engine ENGINE :message MESSAGE :line LINE :column COLUMN)`, and a later request with the same `:engine` returns `nil` without compiling. A missing program, a crash or a killed process is not the formula's fault, so it is not recorded, and the next request compiles again. A missing program is warned about once per session per engine and program: "The texres engine could not run `pdftocairo': program not found." The record belongs to the cache key, so anything that changes the key retries on its own; `latex-to-svg-backend-invalidate` deletes the record for the rest (see [Troubleshooting](#troubleshooting)).
+When an engine rejects the formula — RaTeX cannot parse it, or LaTeX stops on an error in the document — the failure is recorded in the equation's `.eld` sidecar as `(:failed t :kind formula :engine ENGINE :message MESSAGE :line LINE :column COLUMN)`, and a later request with the same `:engine` returns `nil` without compiling. A missing program, a crash or a killed process is not the formula's fault, so it is not recorded, and the next request compiles again. A missing program is warned about once per buffer per engine and program: "The texres engine could not run `pdftocairo': program not found." The record belongs to the cache key, so anything that changes the key retries on its own; `latex-to-svg-backend-invalidate` deletes the record for the rest (see [Troubleshooting](#troubleshooting)).
 
-A failed compile warns once per equation per buffer, naming the buffer and linking to the log. `:quiet t` drops that warning for the call; configuration problems (a missing program, an unwritable cache, an Emacs without SVG support) still warn. The backend has no option for it: a front-end owns the user's choice and passes it, as for `:engine`. A front-end that shows the error itself passes `:quiet t` and uses the plist below.
+A failed compile warns once per equation per buffer, naming the buffer and linking to the log. `:quiet t` drops that warning for the call; configuration problems (a missing program, an unwritable cache, an Emacs without SVG support) still warn. Every warning names the buffer that made the request, and is shown once per buffer per cause, with no expiry: opening the file again shows it again. A buffer killed before its compile ends gets no warning. The cache collector, which no buffer requests, warns each time it fails. The backend has no option for `:quiet`: a front-end owns the user's choice and passes it, as for `:engine`. A front-end that shows the error itself passes `:quiet t` and uses the plist below.
 
 A request that ended without a picture calls `CALLBACK` with a plist:
 
@@ -379,7 +379,7 @@ Every backslash is doubled, as in any Elisp string. `\input` looks for the file 
 **After editing a file the preamble loads**, such as `macros.tex`, compile the equations again: the cache key covers the options' text and the directory, not the contents of the files they load, and a `.fmt` file holds those contents as they were at the dump. `C-u M-x latex-to-svg-frontend-refresh` does both for the current buffer: it deletes the buffer's `.fmt` file (`latex-to-svg-backend-invalidate-format`) and compiles its equations again. It does this for the current buffer only; other open files of the project need their own.
 
 - The directory is part of the cache key, and of the `.fmt` file's key when `-preamble` or `-appended-preamble` is set per buffer, so two projects with the same `\input{macros.tex}` share neither SVGs nor `.fmt` files. A buffer with no buffer-local preamble uses the one `.fmt` file everyone shares.
-- A directory holding one of `\ { } % # ~`, or a remote one (the compile runs locally), gets no `\input@path` and is reported once.
+- A directory holding one of `\ { } % # ~`, or a remote one (the compile runs locally), gets no `\input@path` and is reported once per buffer.
 - Neither option has a `:safe` predicate, as both are LaTeX code: Emacs asks
   before applying them from a `.dir-locals.el`, and answering `!` trusts only
   that exact value, so the next edit of the string asks again. For a project

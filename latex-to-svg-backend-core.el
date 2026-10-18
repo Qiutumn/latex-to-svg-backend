@@ -103,7 +103,7 @@ Rendering equations while no frame is graphical is no longer
 supported: whether to render is the front-end's decision, since only
 the front-end knows which frame shows the buffer, and the front-ends
 compile nothing while every frame is a terminal frame.  A non-nil value
-is reported once per session."
+is reported once in each buffer that shows equations."
   :type 'boolean
   :safe #'booleanp
   :group 'latex-to-svg-backend)
@@ -118,7 +118,7 @@ is reported once per session."
 Each image is now given its width in pixels, computed from the font
 size the front-end passes, so the resolution at which Emacs converts
 an SVG's pt to pixels no longer matters.  A value other than 96.0 is
-reported once per session."
+reported once in each buffer that shows equations."
   :type 'number
   :safe #'numberp
   :group 'latex-to-svg-backend)
@@ -193,78 +193,69 @@ compile fails because of the formula."
 
 ;;;; Error reporting
 
-;; Conditions already reported by `latex-to-svg-backend--warn-once', keyed
-;; "CONTEXT/ERROR-SYMBOL" and valued with the time they were reported.  An
-;; error the backend recovers from is never silent: the first of each kind
-;; warns, so a misconfiguration is diagnosable, while a recurring one does not
-;; warn once per equation.
-(defvar latex-to-svg-backend--warned (make-hash-table :test 'equal)
-  "Context/condition pairs already reported this session, and when.")
+;; A warning belongs to the buffer that requested the work: it is shown once
+;; per buffer per cause, so equations within one buffer share one warning,
+;; and opening the file again shows it again.  The marks live with the
+;; buffer and die with it.
+(defvar-local latex-to-svg-backend--warned nil
+  "Causes already reported in this buffer (see `latex-to-svg-backend--warn').")
 
-;; Buffer-scoped marks live with the buffer, so they are discarded when it is
-;; killed and never accumulate for a long-lived process, a rename cannot re-arm
-;; them, and a reopened document is genuinely a new one.
-(defvar-local latex-to-svg-backend--warned-in-buffer nil
-  "Alist of context/condition pairs already reported in this buffer, and when.")
+(defvar latex-to-svg-backend--orphaned nil
+  "Non-nil while the backend works for a buffer that was killed.
+`latex-to-svg-backend--warn' shows nothing then: nobody is looking at
+the equation.  See `latex-to-svg-backend--with-requester'.")
 
-(defconst latex-to-svg-backend--warn-interval 86400
-  "Seconds before the same condition is reported again at the same site.
-A warning from three weeks ago says nothing about whether the problem is
-still there, so a mark goes stale instead of lasting for the life of the
-buffer or the process.  A day is long enough that a persistent failure
-costs one line in `*Warnings*' per day, and lines up with the default
-`latex-to-svg-backend-gc-interval', so a cache directory the collector
-cannot write reports once per collection attempt.")
+(defun latex-to-svg-backend--warn (cause message)
+  "Show MESSAGE as a warning naming the current buffer, once for CAUSE.
+CAUSE is a string naming the problem; the current buffer is marked with
+it, so a second request in the buffer with the same CAUSE shows nothing,
+and another buffer shows it again.  MESSAGE names the cause and how to
+fix it.  Return non-nil when the warning was shown.
 
-(defun latex-to-svg-backend--mark-once (seen &optional scope)
-  "Mark SEEN as reported and return non-nil, unless it was reported already.
-SEEN is a string naming the condition.  SCOPE is as for
-`latex-to-svg-backend--warn-once', which describes how often \"once\" is."
-  (let* ((now (float-time))
-         (last (if (eq scope 'buffer)
-                   (cdr (assoc seen latex-to-svg-backend--warned-in-buffer))
-                 (gethash seen latex-to-svg-backend--warned))))
-    (when (or (null last)
-              (> (- now last) latex-to-svg-backend--warn-interval))
-      (if (eq scope 'buffer)
-          (setf (alist-get seen latex-to-svg-backend--warned-in-buffer
-                           nil nil #'equal)
-                now)
-        (puthash seen now latex-to-svg-backend--warned))
-      t)))
-
-(defun latex-to-svg-backend--warn-once (context err &optional scope)
-  "Report ERR under CONTEXT once, and return nil.
-For an error the backend recovers from: the recovery is reported rather than
-silenced, but a recurring one does not warn per equation.  CONTEXT is a
-short phrase naming what failed, e.g. \"recording cache use\".
-
-SCOPE says how often \"once\" is.  Nil means once per session, recorded in
-`latex-to-svg-backend--warned'.  `buffer' means once per buffer, marked
-buffer-locally in `latex-to-svg-backend--warned-in-buffer': the display
-path is entered from the buffer being rendered, so a problem that persists
-is re-reported for each document opened, rather than once for the life of a
-process -- an Emacs server runs for weeks, and a single warning there is
-easily missed or long stale.  Equations within one buffer still share one
-warning.
-
-Callers reached from a process sentinel or an idle timer must leave SCOPE
-nil: the buffer current there is unrelated to the equation (our own process
-output buffer, or whatever the timer interrupted), so marking it would both
-misattribute the diagnosis and warn far too often.  A compile failure is
-the exception: its waiters record the requesting buffer (see
-`latex-to-svg-backend--waiter'), and `latex-to-svg-backend--report-failure'
-marks that buffer.
-
-Either way a mark goes stale after `latex-to-svg-backend--warn-interval',
-so a condition that is still occurring is reported again rather than
-resting on a warning from weeks ago."
-  (when (latex-to-svg-backend--mark-once
-         (format "%s/%s" context (car err)) scope)
+The current buffer must be the one that requested the work.  Code run
+from a process sentinel finds it in the waiters (see
+`latex-to-svg-backend--warn-waiters'); code run for a killed buffer
+shows nothing (see `latex-to-svg-backend--orphaned')."
+  (unless (or latex-to-svg-backend--orphaned
+              (member cause latex-to-svg-backend--warned))
+    (push cause latex-to-svg-backend--warned)
     (display-warning 'latex-to-svg-backend
-                     (format "%s: %s" context (error-message-string err))
-                     :warning))
-  nil)
+                     (format "%s: %s" (buffer-name) message)
+                     :warning)
+    t))
+
+(defun latex-to-svg-backend--warn-waiters (key cause message)
+  "Warn with MESSAGE for CAUSE in each live buffer waiting for KEY.
+KEY is a content key with waiters in `latex-to-svg-backend--pending'.
+For code run from a process sentinel, where the current buffer is not
+the one that requested the compile.  See `latex-to-svg-backend--warn'."
+  (dolist (buffer (delete-dups
+                   (mapcar (lambda (waiter) (plist-get waiter :buffer))
+                           (gethash key latex-to-svg-backend--pending))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (let ((latex-to-svg-backend--orphaned nil))
+          (latex-to-svg-backend--warn cause message))))))
+
+(defmacro latex-to-svg-backend--with-requester (buffer &rest body)
+  "Run BODY in BUFFER, the buffer that requested it.
+When BUFFER was killed, run BODY in the current buffer with no warnings
+\(see `latex-to-svg-backend--orphaned')."
+  (declare (indent 1) (debug t))
+  (let ((b (make-symbol "buffer")))
+    `(let ((,b ,buffer))
+       (if (buffer-live-p ,b)
+           (with-current-buffer ,b
+             (let ((latex-to-svg-backend--orphaned nil))
+               ,@body))
+         (let ((latex-to-svg-backend--orphaned t))
+           ,@body)))))
+
+(defun latex-to-svg-backend--cache-fix ()
+  "Return the sentence that says how to fix an unwritable cache directory."
+  (format "Make %s writable, or set `latex-to-svg-backend-cache-directory' \
+to another directory."
+          (latex-to-svg-backend--cache-dir-name)))
 
 ;;;; Colors
 
@@ -295,44 +286,38 @@ terminal say, is the front-end's decision."
 
 (defun latex-to-svg-backend--report-no-svg ()
   "Warn that this Emacs cannot display SVG images, and return nil.
-Once per session (see `latex-to-svg-backend--mark-once'), even for a
-quiet request: it is a configuration problem, not the formula's."
-  (when (latex-to-svg-backend--mark-once "no SVG support")
-    (display-warning
-     'latex-to-svg-backend
-     (concat latex-to-svg-backend--no-svg-message
-             "\nEquations stay as LaTeX source.")
-     :warning))
+Once per buffer (see `latex-to-svg-backend--warn'), even for a quiet
+request: it is a configuration problem, not the formula's."
+  (latex-to-svg-backend--warn
+   "no SVG support"
+   (concat latex-to-svg-backend--no-svg-message
+           "\nEquations stay as LaTeX source.  To see them, use an Emacs \
+built with librsvg."))
   nil)
 
 (defun latex-to-svg-backend--report-obsolete-options ()
   "Warn that an obsolete option without effect is set.
-Once per session and option (see `latex-to-svg-backend--mark-once'):
-the options are read on every request."
-  (when (and (with-suppressed-warnings
-                 ((obsolete latex-to-svg-backend-svg-dpi))
-               (not (eql latex-to-svg-backend-svg-dpi 96.0)))
-             (latex-to-svg-backend--mark-once "obsolete option/svg-dpi"))
-    (display-warning
-     'latex-to-svg-backend
+Once per buffer and option (see `latex-to-svg-backend--warn'): the
+options are read on every request."
+  (when (with-suppressed-warnings
+            ((obsolete latex-to-svg-backend-svg-dpi))
+          (not (eql latex-to-svg-backend-svg-dpi 96.0)))
+    (latex-to-svg-backend--warn
+     "obsolete option/svg-dpi"
      "`latex-to-svg-backend-svg-dpi' is obsolete since 0.14.0 and has no \
 effect: equations are sized from the font size the front-end passes.
-To change their size, set `latex-to-svg-backend-font-scale'."
-     :warning))
-  (when (and (with-suppressed-warnings
-                 ((obsolete latex-to-svg-backend-render-on-non-graphic))
-               latex-to-svg-backend-render-on-non-graphic)
-             (latex-to-svg-backend--mark-once
-              "obsolete option/render-on-non-graphic"))
-    (display-warning
-     'latex-to-svg-backend
+To change their size, set `latex-to-svg-backend-font-scale'."))
+  (when (with-suppressed-warnings
+            ((obsolete latex-to-svg-backend-render-on-non-graphic))
+          latex-to-svg-backend-render-on-non-graphic)
+    (latex-to-svg-backend--warn
+     "obsolete option/render-on-non-graphic"
      "`latex-to-svg-backend-render-on-non-graphic' is obsolete since 0.14.0 \
 and has no effect: rendering while no frame is graphical is no longer \
 supported.
 If your workflow needs it, please open an issue at \
 https://github.com/alberti42/latex-to-svg-backend/issues describing \
-that workflow."
-     :warning)))
+that workflow.")))
 
 ;;;; Cache addressing
 
@@ -342,14 +327,19 @@ Honours `latex-to-svg-backend-cache-directory', else `$XDG_CACHE_HOME'
 \(or `~/.cache') under `emacs/latex-to-svg/'.  Files are organised into
 `svg/' (sharded equation SVGs + sidecars) and `fmt/' (precompiled
 preambles) subdirectories, plus the `gc-timestamp' housekeeping file."
-  (let ((dir (or latex-to-svg-backend-cache-directory
-                 (expand-file-name
-                  "emacs/latex-to-svg/"
-                  (or (getenv "XDG_CACHE_HOME")
-                      (expand-file-name "~/.cache"))))))
+  (let ((dir (latex-to-svg-backend--cache-dir-name)))
     (unless (file-directory-p dir)
       (make-directory dir t))
     dir))
+
+(defun latex-to-svg-backend--cache-dir-name ()
+  "Return the name of the root cache directory, without creating it.
+See `latex-to-svg-backend--cache-dir'."
+  (or latex-to-svg-backend-cache-directory
+      (expand-file-name
+       "emacs/latex-to-svg/"
+       (or (getenv "XDG_CACHE_HOME")
+           (expand-file-name "~/.cache")))))
 
 (defun latex-to-svg-backend--subdir (name)
   "Return subdirectory NAME under the cache directory, creating it."
@@ -390,16 +380,24 @@ file has its own (see `latex-to-svg-backend--touch-format').
 
 Signals `file-missing' when FILE is gone -- the caller treats that as a
 cache miss (see `latex-to-svg-backend--cached-image').  Any other refusal
-by the filesystem is reported once (`latex-to-svg-backend--warn-once') and
-then tolerated: the mtime only orders GC, so an entry owned by another
-user (a cache populated once under sudo) or on a read-only mount is left
-untouched, ages out, and recompiles."
+by the filesystem is reported once per buffer (see
+`latex-to-svg-backend--warn') and then tolerated: the mtime only orders
+GC, so an entry owned by another user (a cache populated once under
+sudo) or on a read-only mount is left untouched, ages out, and
+recompiles."
   (condition-case err
       (set-file-times file)
     ;; A collected entry belongs to the caller, which turns it into a miss.
     (file-missing (signal (car err) (cdr err)))
     (file-error
-     (latex-to-svg-backend--warn-once "recording cache use" err 'buffer))))
+     (latex-to-svg-backend--warn
+      "recording cache use"
+      (format "Cannot record the use of %s: %s.
+The garbage collector deletes an equation unused for \
+`latex-to-svg-backend-cache-max-age' days, and cannot tell that this \
+one is in use.  %s"
+              file (error-message-string err)
+              (latex-to-svg-backend--cache-fix))))))
 
 ;;;; SVG markup
 
@@ -721,9 +719,9 @@ the caller builds the image once it is shown."
             (when (file-exists-p file)
               ;; The cache is shared across sessions, so another session's GC
               ;; can collect the entry between the check above and the read
-              ;; below.  That is a miss -- the caller recompiles -- not an
-              ;; error to raise from the display path.
-              (condition-case err
+              ;; below.  That is a miss -- the caller recompiles, which is
+              ;; what a cache is for -- so nothing is reported.
+              (condition-case nil
                   (progn
                     ;; Record the access for the LRU garbage collector.
                     (latex-to-svg-backend--touch file)
@@ -731,9 +729,7 @@ the caller builds the image once it is shown."
                              (latex-to-svg-backend--load-svg-image
                               file target color background padding)
                              latex-to-svg-backend--image-cache))
-                (file-missing
-                 (latex-to-svg-backend--warn-once
-                  "cache entry collected while rendering" err 'buffer)))))))))
+                (file-missing nil))))))))
 
 ;;;; Crop to the ink
 
@@ -1031,7 +1027,7 @@ were scheduled.  ENGINE is as for `latex-to-svg-backend--failure'."
 (defun latex-to-svg-backend--start-compile (key start &optional engine)
   "Call START, which starts the compile of KEY in the slot KEY holds.
 A compile that cannot start (its scratch directory cannot be created,
-say) is reported once per session and ended (see
+say) is reported in the buffers waiting for it and ended (see
 `latex-to-svg-backend--compile-done'), so its slot is freed and the next
 request for KEY compiles again.  Its waiters get a `setup' failure of
 ENGINE (see `latex-to-svg-backend--failure').  It is reported, not
@@ -1040,12 +1036,18 @@ the slot."
   (condition-case err
       (funcall start)
     (error
-     (latex-to-svg-backend--warn-once "starting a compile" err)
-     (let ((failure (latex-to-svg-backend--failure
-                     'setup engine
-                     :message (format "The %s engine could not start a compile: %s"
-                                      (latex-to-svg-backend--engine-name engine)
-                                      (error-message-string err)))))
+     (let* ((message (format "The %s engine could not start a compile: %s"
+                             (latex-to-svg-backend--engine-name engine)
+                             (error-message-string err)))
+            (failure (latex-to-svg-backend--failure
+                      'setup engine :message message)))
+       (latex-to-svg-backend--warn-waiters
+        key "starting a compile"
+        (format "%s.
+A compile writes into `temporary-file-directory' (%s) and into the \
+cache directory (%s): make both writable."
+                message temporary-file-directory
+                (latex-to-svg-backend--cache-dir-name)))
        (dolist (waiter (gethash key latex-to-svg-backend--pending))
          (latex-to-svg-backend--call-back (plist-get waiter :callback) failure)))
      (latex-to-svg-backend--compile-done key))))
@@ -1095,54 +1097,46 @@ slot starts the oldest queued compile."
           (delete key latex-to-svg-backend--running))
     (latex-to-svg-backend--fill-slots)))
 
-(defun latex-to-svg-backend--report-failure (key latex engine &optional buffer)
+(defun latex-to-svg-backend--report-failure (key latex engine &optional message)
   "Warn that ENGINE could not compile LATEX, whose content key is KEY.
-Once per equation per BUFFER, the buffer that requested it, which the
-warning names; with no BUFFER, once per equation per session (see
-`latex-to-svg-backend--warn-once' for how long \"once\" lasts).  The
-warning links to KEY's saved log when there is one."
-  (let ((seen (concat "compile failed/" key)))
-    (when (if buffer
-              (with-current-buffer buffer
-                (latex-to-svg-backend--mark-once seen 'buffer))
-            (latex-to-svg-backend--mark-once seen))
-      (let ((log (latex-to-svg-backend--log-file key)))
-        (display-warning
-         'latex-to-svg-backend
-         (format "%s compile failed%s for: %s\nSee log: %s"
-                 (latex-to-svg-backend--engine-name engine)
-                 (if buffer (format " in %s" (buffer-name buffer)) "")
-                 (truncate-string-to-width latex 60 nil nil t)
-                 (if (file-exists-p log) log "(no log available)"))
-         :warning)
-        (when (and (file-exists-p log) (get-buffer "*Warnings*"))
-          (with-current-buffer "*Warnings*"
-            (let ((inhibit-read-only t))
-              (goto-char (point-max))
-              (save-excursion
-                (when (search-backward log nil t)
-                  (make-text-button (point) (+ (point) (length log))
-                                    'action (lambda (_) (find-file log))
-                                    'help-echo "Open the compile log"))))))))))
+Once per equation per buffer, in the current buffer, the one that
+requested it (see `latex-to-svg-backend--warn').  MESSAGE is the
+failure's (see `latex-to-svg-backend--failure'), or nil.  The warning
+links to KEY's saved log when there is one."
+  (let ((log (latex-to-svg-backend--log-file key)))
+    (when (latex-to-svg-backend--warn
+           (concat "compile failed/" key)
+           (format "%s compile failed for: %s%s\nSee log: %s"
+                   (latex-to-svg-backend--engine-name engine)
+                   (truncate-string-to-width latex 60 nil nil t)
+                   (if message (concat "\n" message) "")
+                   (if (file-exists-p log) log "(no log available)")))
+      (when (and (file-exists-p log) (get-buffer "*Warnings*"))
+        (with-current-buffer "*Warnings*"
+          (let ((inhibit-read-only t))
+            (goto-char (point-max))
+            (save-excursion
+              (when (search-backward log nil t)
+                (make-text-button (point) (+ (point) (length log))
+                                  'action (lambda (_) (find-file log))
+                                  'help-echo "Open the compile log")))))))))
 
 (defun latex-to-svg-backend--report-missing-program (engine program)
   "Warn that ENGINE could not run PROGRAM, because it is not found.
 A missing program is a configuration problem, not the formula's, so
-the warning is given even for a quiet request, once per session per
-ENGINE and PROGRAM (see `latex-to-svg-backend--mark-once').  Only the
-warning is once: nothing is recorded, so every request runs PROGRAM
-again, and an equation compiles as soon as PROGRAM is installed."
+the warning is given even for a quiet request, once per buffer per
+ENGINE and PROGRAM, in the current buffer (see
+`latex-to-svg-backend--warn').  Only the warning is once: nothing is
+recorded, so every request runs PROGRAM again, and an equation compiles
+as soon as PROGRAM is installed."
   (let ((engine (or engine 'latex)))
-    (when (latex-to-svg-backend--mark-once
-           (format "program not found/%s/%s" engine program))
-      (display-warning
-       'latex-to-svg-backend
-       (format "%s
+    (latex-to-svg-backend--warn
+     (format "program not found/%s/%s" engine program)
+     (format "%s
 Install it, or set where it is with \
 M-x customize-group RET latex-to-svg-backend-%s."
-               (latex-to-svg-backend--missing-program-message engine program)
-               engine)
-       :warning))))
+             (latex-to-svg-backend--missing-program-message engine program)
+             engine))))
 
 (defun latex-to-svg-backend--missing-program-message (engine program)
   "Return the line that says ENGINE could not run PROGRAM.
@@ -1193,8 +1187,9 @@ found from KEY when the record is read, and a recorded failure is the
 formula's, so no program is missing.  A request that finds it does not
 compile again (see `latex-to-svg-backend'), until
 `latex-to-svg-backend-invalidate' deletes it.  Runs in the compile
-sentinel, so a sidecar that cannot be written is reported once and the
-equation is simply compiled again next time.
+sentinel, so a sidecar that cannot be written is reported in the
+buffers waiting for KEY (see `latex-to-svg-backend--warn-waiters'), and
+the equation is simply compiled again next time.
 
 The file is written as UTF-8, for the reason
 `latex-to-svg-backend--compile' gives: a message can quote a character
@@ -1212,7 +1207,12 @@ of the equation."
                          :column (plist-get failure :column))
                    (current-buffer)))))
     (file-error
-     (latex-to-svg-backend--warn-once "recording a failed compile" err))))
+     (latex-to-svg-backend--warn-waiters
+      key "recording a failed compile"
+      (format "Cannot record the failed compile in %s: %s.
+The equation is compiled again on every request.  %s"
+              (latex-to-svg-backend--meta-file key) (error-message-string err)
+              (latex-to-svg-backend--cache-fix))))))
 
 (defun latex-to-svg-backend--compile-failed
     (key latex dir &optional process-output engine fault exit)
@@ -1237,10 +1237,12 @@ not found, that is reported (see
 `latex-to-svg-backend--report-missing-program') instead of the failure
 of LATEX, and no waiter is handed to its fallback.
 
-Every other waiter that is not quiet gets a warning in its requesting
-buffer, linking to the log (see `latex-to-svg-backend--report-failure').
-A buffer killed before the compile ended is skipped; when no requesting
-buffer is left, the warning is once per session.
+A missing program is reported in every requesting buffer, quiet or
+not.  Every other waiter that is not quiet gets a warning in its
+requesting buffer, linking to the log (see
+`latex-to-svg-backend--report-failure').  A buffer killed before the
+compile ended gets no warning, and its fallback runs with none (see
+`latex-to-svg-backend--with-requester').
 
 Every waiter that is not handed to its fallback, quiet or not, has its
 callback called with the failure (see `latex-to-svg-backend--call-back'):
@@ -1253,9 +1255,7 @@ echoing an unencodable Unicode character would otherwise make
   (let* ((log-src (expand-file-name "equation.log" dir))
          (log-dst (latex-to-svg-backend--log-file key))
          (have-tex-log (file-exists-p log-src))
-         (have-output (not (string-empty-p (or process-output ""))))
-         (reported nil)
-         (orphaned nil))
+         (have-output (not (string-empty-p (or process-output "")))))
     (when (or have-tex-log have-output)
       (let ((coding-system-for-read 'raw-text)
             (coding-system-for-write 'raw-text))
@@ -1287,10 +1287,8 @@ echoing an unencodable Unicode character would otherwise make
                'setup engine
                :message (latex-to-svg-backend--setup-message engine exit)
                :key key)))))
-      (if missing
-          (latex-to-svg-backend--report-missing-program engine missing)
-        (when fault
-          (latex-to-svg-backend--record-failure key outcome)))
+      (when fault
+        (latex-to-svg-backend--record-failure key outcome))
       (dolist (waiter (gethash key latex-to-svg-backend--pending))
         (let ((fallback (plist-get waiter :fallback))
               (buffer (plist-get waiter :buffer)))
@@ -1300,22 +1298,24 @@ echoing an unencodable Unicode character would otherwise make
             ;; reported instead of falling back again.  Its callback is
             ;; called when the fallback ends.
             (condition-case fb-err
-                (funcall fallback (plist-put (copy-sequence waiter) :fallback nil))
+                (latex-to-svg-backend--with-requester buffer
+                  (funcall fallback
+                           (plist-put (copy-sequence waiter) :fallback nil)))
               (error
                (message "latex-to-svg-backend: fallback error: %S" fb-err)
                (latex-to-svg-backend--call-back
                 (plist-get waiter :callback) outcome))))
            (t
-            (cond
-             ((or missing (plist-get waiter :quiet)))
-             ((buffer-live-p buffer)
-              (latex-to-svg-backend--report-failure key latex engine buffer)
-              (setq reported t))
-             (t (setq orphaned t)))
+            (when (buffer-live-p buffer)
+              (latex-to-svg-backend--with-requester buffer
+                (cond
+                 (missing
+                  (latex-to-svg-backend--report-missing-program engine missing))
+                 ((not (plist-get waiter :quiet))
+                  (latex-to-svg-backend--report-failure
+                   key latex engine (plist-get outcome :message))))))
             (latex-to-svg-backend--call-back
-             (plist-get waiter :callback) outcome)))))
-      (when (and orphaned (not reported))
-        (latex-to-svg-backend--report-failure key latex engine)))))
+             (plist-get waiter :callback) outcome))))))))
 
 ;;;; Cache maintenance (garbage collection)
 
@@ -1365,35 +1365,37 @@ bytes freed."
 
 (defun latex-to-svg-backend--last-gc-time ()
   "Return the `float-time' of the last recorded GC, or 0 if never / unreadable.
-An unusable stamp is reported once and treated as \"never collected\", which
-is self-healing: the next GC runs and rewrites the stamp."
+An unusable stamp is treated as \"never collected\", with no warning:
+the GC runs and rewrites the stamp, and warns when it cannot (see
+`latex-to-svg-backend--record-gc-time')."
   (let ((f (latex-to-svg-backend--gc-stamp-file)))
     (or (and (file-readable-p f)
-             (condition-case err
+             (condition-case nil
                  (let ((stamp (with-temp-buffer
                                 (insert-file-contents f)
                                 (read (current-buffer)))))
-                   (if (numberp stamp)
-                       stamp
-                     ;; Parsed, but not a time -- corrupt just the same.
-                     (latex-to-svg-backend--warn-once
-                      "reading the GC timestamp"
-                      (list 'invalid-read-syntax f))))
-               ((end-of-file invalid-read-syntax file-error)
-                (latex-to-svg-backend--warn-once
-                 "reading the GC timestamp" err))))
+                   ;; Parsed, but not a time -- corrupt just the same.
+                   (and (numberp stamp) stamp))
+               ((end-of-file invalid-read-syntax file-error) nil)))
         0)))
 
 (defun latex-to-svg-backend--record-gc-time ()
   "Persist the current time as the last GC time (for the daily cadence).
-A cache directory that cannot be written is reported once; the cadence is
-then simply not persisted, so the next idle check collects again -- harmless,
-since collecting an already-collected cache frees nothing."
-  (condition-case err
-      (with-temp-file (latex-to-svg-backend--gc-stamp-file)
-        (prin1 (float-time) (current-buffer)))
-    (file-error
-     (latex-to-svg-backend--warn-once "recording the GC timestamp" err))))
+A stamp that cannot be written is reported each time: the GC is
+requested by no buffer, so there is none to mark.  The cadence is then
+not persisted, so the next idle check collects, and warns, again."
+  (let ((file (latex-to-svg-backend--gc-stamp-file)))
+    (condition-case err
+        (with-temp-file file
+          (prin1 (float-time) (current-buffer)))
+      (file-error
+       (display-warning
+        'latex-to-svg-backend
+        (format "Cannot record the time of the cache collection in %s: %s.
+The cache is collected again at every idle check.  %s"
+                file (error-message-string err)
+                (latex-to-svg-backend--cache-fix))
+        :warning)))))
 
 (defun latex-to-svg-backend--gc-directory (name extensions max-age)
   "Delete the entries in cache subdirectory NAME older than MAX-AGE days.

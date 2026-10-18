@@ -64,7 +64,8 @@ This is `pdftocairo' from Poppler <https://poppler.freedesktop.org>."
 texres runs one `pdflatex' pass only when called by that name.  The
 link is in the `texres/' subdirectory of the cache, so it shadows no
 `pdflatex' on the variable `exec-path'.  Nil when texres is not found,
-or when the link cannot be made, which is reported once.
+or when the link cannot be made, which is reported once per buffer
+\(see `latex-to-svg-backend--warn').
 
 A stopgap until texres can be told the program name without a link."
   (when-let* ((texres (executable-find latex-to-svg-backend-texres-program)))
@@ -75,7 +76,13 @@ A stopgap until texres can be told the program name without a link."
         (condition-case err
             (make-symbolic-link target link t)
           (file-error
-           (latex-to-svg-backend--warn-once "linking pdflatex to texres" err))))
+           (latex-to-svg-backend--warn
+            "linking pdflatex to texres"
+            (format "Cannot link %s to texres: %s.
+%s  On Windows, creating a symbolic link needs administrator rights or \
+Developer Mode."
+                    link (error-message-string err)
+                    (latex-to-svg-backend--cache-fix))))))
       (and (equal (file-symlink-p link) target) link))))
 
 (add-to-list 'latex-to-svg-backend--format-programs
