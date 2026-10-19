@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-20
+
+A request whose outcome is no longer wanted can be cancelled, which
+stops its compile. A formula error no longer turns off the precompiled
+preamble. The `.fmt` file is dumped again when the TeX installation
+changes, checked at every compile, or when a preamble file the user
+lists changes. The two preamble options are renamed after what they
+are for. Each compile runs in a scratch directory in the cache
+directory and moves its SVG into place, so the cache never holds a
+partial SVG.
+
 ### Added
 
 - `latex-to-svg-backend-cancel`: `(latex-to-svg-backend-cancel CALLBACK)`
@@ -755,7 +766,8 @@ Initial release.
 - LaTeX-to-SVG rendering engine: compile LaTeX to a color-independent SVG via
   `latex → dvisvgm`, with on-disk and in-memory caching.
 
-[Unreleased]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.15.1...HEAD
+[Unreleased]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.15.1...v0.16.0
 [0.15.1]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/alberti42/latex-to-svg-backend/compare/v0.13.0...v0.14.0
