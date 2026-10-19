@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Each compile runs in a scratch directory under `tmp/` in the cache
+  directory, instead of `temporary-file-directory`, and moves its SVG
+  into `svg/` with a rename. The cache key and the SVG are unchanged.
+- `latex-to-svg-backend-gc` deletes a scratch directory older than a
+  day, left by an Emacs that stopped during a compile, also when
+  `latex-to-svg-backend-cache-max-age` is nil.
+- The TeX program is given `equation.tex` by its name in the scratch
+  directory, where it runs: TeX reads its command line as a line of
+  input, and the name of the cache directory may hold characters TeX
+  reads as code.
+- The warning for a compile that cannot start names only the cache
+  directory, since the compile no longer writes into
+  `temporary-file-directory`.
+
+### Fixed
+
+- An Emacs that stopped while an engine wrote an SVG into the cache
+  left a partial SVG there, which later requests took as compiled. The
+  LaTeX engine's `dvisvgm` wrote the cache file itself; RaTeX and
+  texres wrote it from Emacs. Each now writes in its scratch directory
+  and moves the file.
+
 ## [0.15.1] - 2026-10-18
 
 Every warning is shown once per buffer per cause, names the buffer, and

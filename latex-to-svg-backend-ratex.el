@@ -171,6 +171,8 @@ bearings stay inside it, until the crop."
 
 (defun latex-to-svg-backend--ratex-store (output svg &optional inline)
   "Write RaTeX's OUTPUT file to the cache file SVG, ready for display.
+The SVG is written next to OUTPUT, then moved to SVG (see
+`latex-to-svg-backend--move-to-cache').
 See `latex-to-svg-backend--ratex-svg' for what changes.  INLINE non-nil
 means the formula carries `latex-to-svg-backend--ratex-strut', so the
 baseline is at the middle of OUTPUT's viewport, and the SVG gives it
@@ -183,14 +185,15 @@ Return non-nil on success, nil when OUTPUT has no SVG root element."
                      (buffer-string)))
               (data (latex-to-svg-backend--ratex-svg raw)))
     (let ((coding-system-for-write 'utf-8-unix)
-          (geometry (and inline (latex-to-svg-backend--svg-geometry raw))))
-      (with-temp-file svg
+          (geometry (and inline (latex-to-svg-backend--svg-geometry raw)))
+          (stored (expand-file-name "stored.svg" (file-name-directory output))))
+      (with-temp-file stored
         (insert (latex-to-svg-backend--mark-x-height
                  (latex-to-svg-backend--mark-baseline
                   data (and geometry
                             (+ (nth 3 geometry) (/ (nth 5 geometry) 2.0))))
-                 latex-to-svg-backend--ratex-x-height))))
-    t))
+                 latex-to-svg-backend--ratex-x-height)))
+      (latex-to-svg-backend--move-to-cache stored svg))))
 
 ;;;; Compile
 
@@ -232,7 +235,7 @@ RaTeX emits no compile metadata, so no `.eld' sidecar is written."
                 (latex-to-svg-backend--ratex-formula
                  latex (plist-get (or inputs (latex-to-svg-backend--ratex-inputs))
                                   :ratex-macros)))
-               (dir (make-temp-file "latex-to-svg-backend" t))
+               (dir (latex-to-svg-backend--scratch-dir))
                (input (expand-file-name "equation.txt" dir))
                ;; `render-svg' numbers its outputs, from 0001.svg.
                (output (expand-file-name "0001.svg" dir))

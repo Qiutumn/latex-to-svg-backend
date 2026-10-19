@@ -325,8 +325,10 @@ that workflow.")))
   "Return the root cache directory, creating it if needed.
 Honours `latex-to-svg-backend-cache-directory', else `$XDG_CACHE_HOME'
 \(or `~/.cache') under `emacs/latex-to-svg/'.  Files are organised into
-`svg/' (sharded equation SVGs + sidecars) and `fmt/' (precompiled
-preambles) subdirectories, plus the `gc-timestamp' housekeeping file."
+`svg/' (sharded equation SVGs + sidecars), `fmt/' (precompiled
+preambles) and `tmp/' (the scratch directories of compiles, see
+`latex-to-svg-backend--scratch-dir') subdirectories, plus the
+`gc-timestamp' housekeeping file."
   (let ((dir (latex-to-svg-backend--cache-dir-name)))
     (unless (file-directory-p dir)
       (make-directory dir t))
@@ -361,6 +363,23 @@ cache).  All of KEY's files — `.svg', `.eld', `.log' — live together in
   "Return the cache SVG path for KEY (inside its shard subdirectory)."
   (expand-file-name (concat key ".svg")
                     (latex-to-svg-backend--shard-dir key)))
+
+(defun latex-to-svg-backend--scratch-dir ()
+  "Create and return a new scratch directory for one compile.
+It is under the `tmp/' subdirectory of the cache directory, so an SVG
+written there reaches the cache by a rename (see
+`latex-to-svg-backend--move-to-cache').  The compile deletes it when it
+ends; one left by a crash is deleted by `latex-to-svg-backend-gc'."
+  (make-temp-file (expand-file-name "compile-"
+                                    (latex-to-svg-backend--subdir "tmp"))
+                  t))
+
+(defun latex-to-svg-backend--move-to-cache (file svg)
+  "Move FILE, an SVG in a scratch directory, to the cache file SVG.
+Both are under the cache directory, so this is a rename, and a request
+finds either no SVG or the whole of it.  Return t."
+  (rename-file file svg t)
+  t)
 
 (defun latex-to-svg-backend--meta-file (key)
   "Return the compile-metadata sidecar path for KEY (a `.eld' next to the SVG)."
@@ -1043,11 +1062,7 @@ the slot."
                       'setup engine :message message)))
        (latex-to-svg-backend--warn-waiters
         key "starting a compile"
-        (format "%s.
-A compile writes into `temporary-file-directory' (%s) and into the \
-cache directory (%s): make both writable."
-                message temporary-file-directory
-                (latex-to-svg-backend--cache-dir-name)))
+        (format "%s.\n%s" message (latex-to-svg-backend--cache-fix)))
        (dolist (waiter (gethash key latex-to-svg-backend--pending))
          (latex-to-svg-backend--call-back (plist-get waiter :callback) failure)))
      (latex-to-svg-backend--compile-done key))))
@@ -1397,6 +1412,28 @@ The cache is collected again at every idle check.  %s"
                 (latex-to-svg-backend--cache-fix))
         :warning)))))
 
+(defconst latex-to-svg-backend--scratch-max-age 1
+  "Days after which `latex-to-svg-backend-gc' deletes a scratch directory.
+A compile deletes its own (see `latex-to-svg-backend--scratch-dir'),
+so one this old was left by an Emacs that stopped during a compile.  A
+compile lasts seconds, so the age cannot reach one that runs, in this
+session or in another that shares the cache.")
+
+(defun latex-to-svg-backend--gc-scratch ()
+  "Delete the scratch directories older than a day.
+See `latex-to-svg-backend--scratch-max-age'.  Return the number deleted."
+  (let ((dir (expand-file-name "tmp" (latex-to-svg-backend--cache-dir)))
+        (now (float-time))
+        (deleted 0))
+    (dolist (d (and (file-directory-p dir)
+                    (directory-files dir t "\\`compile-")))
+      (when (> (- now (float-time (file-attribute-modification-time
+                                   (file-attributes d))))
+               (* latex-to-svg-backend--scratch-max-age 86400))
+        (delete-directory d t)
+        (cl-incf deleted)))
+    deleted))
+
 (defun latex-to-svg-backend--gc-directory (name extensions max-age)
   "Delete the entries in cache subdirectory NAME older than MAX-AGE days.
 EXTENSIONS is as for `latex-to-svg-backend--entry-lead', which dates
@@ -1435,11 +1472,17 @@ is deleted too: its mtime is bumped on every compile that loads it
 dumped again on the next compile.  So is the log of a dump that
 failed.
 
+A compile's scratch directory older than a day, left by an Emacs that
+stopped during the compile, is deleted too, also when
+`latex-to-svg-backend-cache-max-age' is nil (see
+`latex-to-svg-backend--gc-scratch'); it is not counted.
+
 Runs automatically about once a day (see `latex-to-svg-backend-gc-interval');
 this command forces a run now.  Returns a cons (DELETED . BYTES-FREED),
 DELETED counting equations and `.fmt' files."
   (interactive)
   (let ((equations '(0 . 0)) (formats '(0 . 0)))
+    (latex-to-svg-backend--gc-scratch)
     (when-let* ((max-age latex-to-svg-backend-cache-max-age))
       (setq equations (latex-to-svg-backend--gc-directory
                        "svg" latex-to-svg-backend--entry-extensions max-age)

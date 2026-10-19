@@ -782,14 +782,15 @@ A toolchain is the plist `latex-to-svg-backend--compile' runs:
   :output   the file the TeX program writes in the scratch directory;
   :prefix   text written after `\\begin{document}', before the equation;
   :suffix   text written after the equation, before `\\end{document}';
-  :convert  a function of the scratch directory, the TeX output file
-            and the cache SVG, returning the stages that make the SVG
-            (see `latex-to-svg-backend--run-process-chain');
-  :store    nil, or a function of the scratch directory and the cache
-            SVG run after the stages, that returns non-nil once the
-            cache SVG is written.
+  :convert  a function of the scratch directory and the TeX output
+            file, returning the stages that make an SVG in the scratch
+            directory (see `latex-to-svg-backend--run-process-chain');
+  :store    a function of the scratch directory and the cache SVG run
+            after the stages, that returns non-nil once the cache SVG
+            is written, by `latex-to-svg-backend--move-to-cache'.
 
-The LaTeX engine's `dvisvgm' writes the cache SVG itself.  It runs at
+The LaTeX engine's `dvisvgm' writes the SVG as it is cached, and the
+store moves it to the cache.  It runs at
 scale 1: the SVG is vector (glyphs are outline paths via --no-fonts),
 so the scale doesn't affect quality, and the displayed size is set
 later by `latex-to-svg-backend-display-scale'.  `--currentcolor'
@@ -804,19 +805,22 @@ equation's font (`latex-to-svg-backend--latex-x-height-mark')."
         :prefix ""
         :suffix (concat latex-to-svg-backend--latex-baseline-mark
                         latex-to-svg-backend--latex-x-height-mark)
-        :convert (lambda (_dir dvi svg)
-                   (list
-                    (list 'dvisvgm
-                          (list latex-to-svg-backend-dvisvgm-program
-                                "--no-fonts"
-                                "--exact-bbox"
-                                "--currentcolor"
-                                "--scale=1"
-                                "-o"
-                                svg
-                                dvi)
-                          svg)))
-        :store nil))
+        :convert (lambda (dir dvi)
+                   (let ((svg (expand-file-name "equation.svg" dir)))
+                     (list
+                      (list 'dvisvgm
+                            (list latex-to-svg-backend-dvisvgm-program
+                                  "--no-fonts"
+                                  "--exact-bbox"
+                                  "--currentcolor"
+                                  "--scale=1"
+                                  "-o"
+                                  svg
+                                  dvi)
+                            svg))))
+        :store (lambda (dir svg)
+                 (latex-to-svg-backend--move-to-cache
+                  (expand-file-name "equation.svg" dir) svg))))
 
 (defun latex-to-svg-backend--compile
     (key latex &optional metadata inputs no-format toolchain)
@@ -833,7 +837,8 @@ engine that compiles with LaTeX passes its own.
 LATEX is placed verbatim in the document body (the caller supplies
 valid body LaTeX and chooses inline vs display via delimiters).
 Writes a standalone LaTeX document, runs the TeX program and then the
-TOOLCHAIN's stages in a scratch directory, and on success caches the
+TOOLCHAIN's stages in a scratch directory (see
+`latex-to-svg-backend--scratch-dir'), and on success caches the
 SVG and notifies every callback queued for KEY (see
 `latex-to-svg-backend--enqueue').  The scratch directory is removed
 when the process exits.
@@ -857,7 +862,7 @@ A theme change therefore re-tints from cache without recompiling."
          (program (or (plist-get toolchain :program)
                       latex-to-svg-backend-latex-program))
          (store (plist-get toolchain :store))
-         (dir (make-temp-file "latex-to-svg-backend" t))
+         (dir (latex-to-svg-backend--scratch-dir))
          (tex (expand-file-name "equation.tex" dir))
          (output (expand-file-name (plist-get toolchain :output) dir))
          (svg (latex-to-svg-backend--svg-file key))
@@ -911,30 +916,32 @@ A theme change therefore re-tints from cache without recompiling."
     (latex-to-svg-backend--run-process-chain
      dir output-buffer
      (cons (list 'latex
+                 ;; TeX reads its command line as a line of input, and the
+                 ;; name of the cache directory may hold characters TeX
+                 ;; reads as code: name the file in DIR, where TeX runs.
                  (list program
                        "-interaction=nonstopmode"
                        "-halt-on-error"
-                       tex)
+                       "equation.tex")
                  output
                  latex-to-svg-backend--latex-environment)
-           (funcall (plist-get toolchain :convert) dir output svg))
+           (funcall (plist-get toolchain :convert) dir output))
      (lambda (success &optional exit)
        (let* ((stored
                (and success
-                    (or (null store)
-                        (condition-case err
-                            (or (funcall store dir svg)
-                                (progn
-                                  (latex-to-svg-backend--append-process-log
-                                   output-buffer
-                                   "[store] output has no <svg> element")
-                                  nil))
-                          (file-error
-                           (latex-to-svg-backend--append-process-log
-                            output-buffer
-                            (format "[store] storing the SVG failed: %s"
-                                    (error-message-string err)))
-                           nil)))))
+                    (condition-case err
+                        (or (funcall store dir svg)
+                            (progn
+                              (latex-to-svg-backend--append-process-log
+                               output-buffer
+                               "[store] output has no <svg> element")
+                              nil))
+                      (file-error
+                       (latex-to-svg-backend--append-process-log
+                        output-buffer
+                        (format "[store] storing the SVG failed: %s"
+                                (error-message-string err)))
+                       nil))))
               ;; A program that is not found fails with any preamble.
               (retry-format (and (not stored) format-file
                                  (not (stringp (cdr exit))))))

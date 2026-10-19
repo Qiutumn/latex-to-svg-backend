@@ -754,6 +754,12 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
 
 ;;;; Direct process pipeline
 
+(defun latex-to-svg-backend-tests--tex-file (process)
+  "Return the absolute name of the `.tex' file fake PROCESS compiles.
+The TeX program is given the file's name in its directory, where it runs."
+  (expand-file-name (car (last (plist-get (aref process 3) :command)))
+                    (aref process 4)))
+
 (defun latex-to-svg-backend-tests--tex-source (file)
   "Return FILE's contents, bypassing Emacs's `.tex' coding detection.
 `insert-file-contents' on a `.tex' path runs
@@ -841,16 +847,11 @@ completion event."
                (lambda (&rest _)
                  (error "A shell pipeline must not be used"))))
            ,@body))
+       ;; The scratch directories are in the cache directory.
        (dolist (process l2s-test-processes)
-         (let ((buffer (plist-get (aref process 3) :buffer))
-               (dir (aref process 4)))
+         (let ((buffer (plist-get (aref process 3) :buffer)))
            (when (buffer-live-p buffer)
-             (kill-buffer buffer))
-           (when (and (file-directory-p dir)
-                      (string-prefix-p
-                       "latex-to-svg-backend"
-                       (file-name-nondirectory (directory-file-name dir))))
-             (delete-directory dir t))))
+             (kill-buffer buffer))))
        (when (file-directory-p l2s-test-cache-dir)
          (delete-directory l2s-test-cache-dir t)))))
 
@@ -882,12 +883,12 @@ completion event."
              (output-buffer (plist-get latex-plist :buffer))
              (dvi (expand-file-name "equation.dvi" scratch))
              (tex-log (expand-file-name "equation.log" scratch))
-             (svg (latex-to-svg-backend--svg-file key)))
+             (svg (expand-file-name "equation.svg" scratch)))
         (should (equal latex-command
                        (list "latex-direct"
                              "-interaction=nonstopmode"
                              "-halt-on-error"
-                             (expand-file-name "equation.tex" scratch))))
+                             "equation.tex")))
         (should (equal (plist-get latex-plist :connection-type) 'pipe))
         (should (plist-get latex-plist :noquery))
         (should (equal scratch (file-name-as-directory scratch)))
@@ -909,6 +910,8 @@ completion event."
             (insert "<svg/>"))
           (latex-to-svg-backend-tests--finish-fake-process
            dvisvgm-process 0))
+        (should-not (file-exists-p svg))
+        (should (file-exists-p (latex-to-svg-backend--svg-file key)))
         (should (= callbacks 1))
         (should (equal metadata-seen '(:nums (3 . 3))))
         (should-not (gethash key latex-to-svg-backend--pending))
@@ -1060,7 +1063,7 @@ completion event."
                (first-plist (aref first-process 3))
                (first-buffer (plist-get first-plist :buffer))
                (first-scratch (aref first-process 4))
-               (first-tex (car (last (plist-get first-plist :command))))
+               (first-tex (latex-to-svg-backend-tests--tex-file first-process))
                (first-source
                 (latex-to-svg-backend-tests--tex-source first-tex)))
           (should (string-prefix-p "%& " first-source))
@@ -1081,12 +1084,12 @@ completion event."
                  (retry-plist (aref retry-process 3))
                  (retry-buffer (plist-get retry-plist :buffer))
                  (retry-scratch (aref retry-process 4))
-                 (retry-tex (car (last (plist-get retry-plist :command))))
+                 (retry-tex (latex-to-svg-backend-tests--tex-file retry-process))
                  (retry-source
                   (latex-to-svg-backend-tests--tex-source retry-tex))
                  (dvi (expand-file-name "equation.dvi" retry-scratch))
                  (tex-log (expand-file-name "equation.log" retry-scratch))
-                 (svg (latex-to-svg-backend--svg-file key)))
+                 (svg (expand-file-name "equation.svg" retry-scratch)))
             (should-not (string-prefix-p "%& " retry-source))
             (should (string-prefix-p
                      (latex-to-svg-backend--preamble) retry-source))
@@ -1774,8 +1777,7 @@ Return the SVG path."
       (puthash key (list (latex-to-svg-backend--waiter #'ignore))
                latex-to-svg-backend--pending)
       (latex-to-svg-backend--compile key doc)
-      (let* ((tex (car (last (plist-get (aref (car l2s-test-processes) 3)
-                                        :command))))
+      (let* ((tex (latex-to-svg-backend-tests--tex-file (car l2s-test-processes)))
              (bytes (with-temp-buffer
                       (set-buffer-multibyte nil)
                       (insert-file-contents-literally tex)
@@ -2508,7 +2510,7 @@ NEWEST is a function returning the most recently started fake process."
   "Finish the fake `latex' PROCESS on an error in LATEX.
 MESSAGE follows `! ' in the log, and TEXT follows `l.N ', N being
 LINE of LATEX counted in the source the compile wrote."
-  (let* ((tex (car (last (plist-get (aref process 3) :command))))
+  (let* ((tex (latex-to-svg-backend-tests--tex-file process))
          (lines (split-string (latex-to-svg-backend-tests--tex-source tex) "\n"))
          (first (seq-position lines (car (split-string latex "\n")))))
     (with-temp-file (expand-file-name "equation.log" (aref process 4))
@@ -2849,7 +2851,7 @@ LATEX and OFFSET are as for `latex-to-svg-backend--latex-formula-error'."
                                          (latex-to-svg-backend--latex-toolchain))))
           (latex-to-svg-backend--compile key doc nil nil nil toolchain)
           (let* ((process (car l2s-test-processes))
-                 (tex (car (last (plist-get (aref process 3) :command))))
+                 (tex (latex-to-svg-backend-tests--tex-file process))
                  (lines (split-string (latex-to-svg-backend-tests--tex-source tex)
                                       "\n"))
                  (n (1+ (seq-position lines "\\undefined$"))))
@@ -2932,7 +2934,7 @@ and one in a formula's own black.")
                (cairo (expand-file-name "cairo.svg" scratch)))
           (should (equal (plist-get (aref tex-process 3) :command)
                          (list link "-interaction=nonstopmode"
-                               "-halt-on-error" tex)))
+                               "-halt-on-error" "equation.tex")))
           (should (string-search
                    (concat "\\begin{document}\n"
                            latex-to-svg-backend--texres-ink
@@ -3267,8 +3269,8 @@ and one in a formula's own black.")
              (fmt (latex-to-svg-backend--format-file "fake-format"))
              (source (lambda ()
                        (latex-to-svg-backend-tests--tex-source
-                        (car (last (plist-get (aref (car l2s-test-processes) 3)
-                                              :command)))))))
+                        (latex-to-svg-backend-tests--tex-file
+                         (car l2s-test-processes))))))
         (with-temp-file fmt (insert "fake format"))
         (puthash key (list (latex-to-svg-backend--waiter #'ignore))
                  latex-to-svg-backend--pending)
@@ -3317,7 +3319,7 @@ and one in a formula's own black.")
             (should (string-search
                      (concat text "\n\\begin{document}")
                      (latex-to-svg-backend-tests--tex-source
-                      (car (last (plist-get (aref latex 3) :command))))))
+                      (latex-to-svg-backend-tests--tex-file latex))))
             (with-temp-buffer
               (latex-to-svg-backend-tests--succeed-latex
                latex (lambda () (car l2s-test-processes)))))
@@ -3436,8 +3438,8 @@ and one in a formula's own black.")
           (should (string-prefix-p
                    (concat preamble "\n\\begin{document}")
                    (latex-to-svg-backend-tests--tex-source
-                    (car (last (plist-get (aref (car l2s-test-processes) 3)
-                                          :command)))))))))))
+                    (latex-to-svg-backend-tests--tex-file
+                     (car l2s-test-processes))))))))))
 
 (ert-deftest latex-to-svg-backend-fallback-to-ratex-uses-the-requesting-buffer ()
   ;; A LaTeX-to-RaTeX fallback starts from the sentinel, in another buffer,
@@ -3699,6 +3701,21 @@ The binary is bound to `binary'; the dump is stubbed to write the
           (should-not (file-exists-p failed))
           (should (file-exists-p new-fmt))
           (should (file-exists-p new-eld)))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
+(ert-deftest latex-to-svg-backend-gc-deletes-old-scratch-directories ()
+  ;; A scratch directory older than a day was left by an Emacs that
+  ;; stopped during a compile; it goes even when entries never expire.
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-gc-tmp" t))
+        (latex-to-svg-backend-cache-max-age nil))
+    (unwind-protect
+        (let ((old (latex-to-svg-backend--scratch-dir))
+              (new (latex-to-svg-backend--scratch-dir)))
+          (with-temp-file (expand-file-name "equation.tex" old) (insert "x"))
+          (set-file-times old (seconds-to-time (- (float-time) (* 2 86400))))
+          (latex-to-svg-backend-gc)
+          (should-not (file-exists-p old))
+          (should (file-directory-p new)))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (provide 'latex-to-svg-backend-tests)

@@ -177,6 +177,8 @@ page's top at y 0 and writes big points, 72.27 of them to 72pt."
 
 (defun latex-to-svg-backend--texres-store (dir svg)
   "Write the SVG `pdftocairo' left in DIR to the cache file SVG.
+The SVG is written in DIR, then moved to SVG (see
+`latex-to-svg-backend--move-to-cache').
 The SVG is cropped to its ink, with the marker ink as `currentColor'
 \(see `latex-to-svg-backend--crop-to-ink'), and gives the baseline and
 the x-height the compile logged (see `latex-to-svg-backend--texres-baseline'
@@ -191,13 +193,14 @@ non-nil on success, nil when the output has no SVG root element."
                         latex-to-svg-backend--texres-ink-svg
                       latex-to-svg-backend--texres-black-svg))))
     (when data
-      (let ((coding-system-for-write 'utf-8-unix))
-        (with-temp-file svg
+      (let ((coding-system-for-write 'utf-8-unix)
+            (stored (expand-file-name "stored.svg" dir)))
+        (with-temp-file stored
           (insert (latex-to-svg-backend--mark-x-height
                    (latex-to-svg-backend--mark-baseline
                     data (latex-to-svg-backend--texres-baseline dir))
-                   (latex-to-svg-backend--texres-x-height dir)))))
-      t)))
+                   (latex-to-svg-backend--texres-x-height dir))))
+        (latex-to-svg-backend--move-to-cache stored svg)))))
 
 ;;;; Compile
 
@@ -217,7 +220,7 @@ does (see `latex-to-svg-backend--compile-failed')."
         :prefix latex-to-svg-backend--texres-ink
         :suffix (concat latex-to-svg-backend--texres-baseline-mark
                         latex-to-svg-backend--texres-x-height-mark)
-        :convert (lambda (dir pdf _svg)
+        :convert (lambda (dir pdf)
                    (let ((out (expand-file-name "cairo.svg" dir)))
                      (list (list 'pdftocairo
                                  (list latex-to-svg-backend-pdftocairo-program

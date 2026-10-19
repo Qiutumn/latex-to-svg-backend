@@ -405,7 +405,7 @@ Every unique equation compiles to a color- and size-independent SVG named by the
 
 Lookup is two-tier: a request is served first from the **in-memory image cache** (a ready-to-display image, keyed by content + color + scale — see [Why](#why)), then from the **on-disk SVG**, and only a miss on both triggers a compile that writes a new SVG. So re-displaying equations within a session never touches disk, and the on-disk tree only grows when a genuinely new (or evicted) equation is rendered.
 
-The cache root is organised into two subdirectories (plus a `gc-timestamp` housekeeping file):
+The cache root is organised into three subdirectories (plus a `gc-timestamp` housekeeping file):
 
 ```
 $XDG_CACHE_HOME/emacs/latex-to-svg/
@@ -413,12 +413,16 @@ $XDG_CACHE_HOME/emacs/latex-to-svg/
 │   └── ab/ abcd….svg  abcd….eld  abcd….log
 ├── fmt/           # precompiled .fmt files of the preamble
 │   └── <fkey>.fmt  <fkey>.eld
+├── tmp/           # one scratch directory per running compile
+│   └── compile-XXXXXX/
 └── gc-timestamp
 ```
 
 SVGs are **sharded** into 256 buckets under `svg/`, named by the first two hex characters of the content hash (`svg/ab/abcd….svg`, with the `.eld` sidecar and any compile `.log` alongside), so no single directory accumulates every equation.
 
-Stale entries are pruned by an **age-based garbage collector**. Each SVG's modification time is a last-use hint, bumped whenever the equation is (re)loaded, so `latex-to-svg-backend-gc` deletes only equations untouched for `latex-to-svg-backend-cache-max-age` days (default 90); a pruned one simply recompiles when next needed. An entry with no SVG, left by a failed compile, is dated by its `.eld` failure record, else by its `.log`, and is collected the same way. A `.fmt` older than the same age is deleted with its `.eld` stamp: each compile that loads it bumps its modification time, and one still wanted is dumped again on the next compile. GC runs automatically at most once per `latex-to-svg-backend-gc-interval` day (default 1), coordinated through an on-disk timestamp and an idle timer — so several sessions sharing the cache don't each run it, and a daemon left running for days still collects daily. Set `-gc-interval` to `nil` to disable automatic GC (you can still call it by hand), or `-cache-max-age` to `nil` to keep entries forever.
+Each compile runs in its own scratch directory under `tmp/`, writes the SVG there, and moves it into `svg/` with a rename: both are under the cache directory, so a request finds either no SVG or the whole of it. The compile deletes its scratch directory when it ends.
+
+Stale entries are pruned by an **age-based garbage collector**. Each SVG's modification time is a last-use hint, bumped whenever the equation is (re)loaded, so `latex-to-svg-backend-gc` deletes only equations untouched for `latex-to-svg-backend-cache-max-age` days (default 90); a pruned one simply recompiles when next needed. An entry with no SVG, left by a failed compile, is dated by its `.eld` failure record, else by its `.log`, and is collected the same way. A `.fmt` older than the same age is deleted with its `.eld` stamp: each compile that loads it bumps its modification time, and one still wanted is dumped again on the next compile. A scratch directory older than a day, left by an Emacs that stopped during a compile, is deleted too, also when `-cache-max-age` is `nil`. GC runs automatically at most once per `latex-to-svg-backend-gc-interval` day (default 1), coordinated through an on-disk timestamp and an idle timer — so several sessions sharing the cache don't each run it, and a daemon left running for days still collects daily. Set `-gc-interval` to `nil` to disable automatic GC (you can still call it by hand), or `-cache-max-age` to `nil` to keep entries forever.
 
 Three interactive commands manage the cache directly:
 
