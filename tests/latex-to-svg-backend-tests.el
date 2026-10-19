@@ -517,7 +517,7 @@ height='%spt' viewBox='0 %s 10 %s'><path d='M0 0'/></svg>" height top height)
   ;; A preamble that will not dump is abandoned for the session: without this,
   ;; every equation pays for another synchronous `latex -ini' run.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fmt-block" t))
-        (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
         (builds 0)
         (warnings 0))
@@ -814,7 +814,7 @@ completion event."
           ;; Tests leave compiles unfinished, each holding a slot: on a
           ;; machine with few processors the next one would queue.
           (latex-to-svg-backend-jobs 100)
-          (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+          (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
           (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
           (l2s-test-processes nil)
           (l2s-test-missing nil)
@@ -1455,19 +1455,22 @@ kept for symmetry with the compile pipeline."
   ;; with no rebuild.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fmt" t))
         (latex-to-svg-backend-precompile t)
-        (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
+        ;; A binary older than the about-to-be-built .fmt.
+        (binary (make-temp-file "l2s-bin"))
         (builds 0))
+    (set-file-times binary '(1 0))
     (unwind-protect
         (cl-letf (((symbol-function 'latex-to-svg-backend--latex-binary)
-                   ;; A binary older than the about-to-be-built .fmt.
-                   (lambda (&optional _program) (let ((f (make-temp-file "l2s-bin")))
-                                (set-file-times f '(1 0)) f)))
+                   (lambda (&optional _program) binary))
                   ((symbol-function 'latex-to-svg-backend--build-format)
                    (lambda (fkey _preamble &optional _program)
                      (cl-incf builds)
                      (let ((f (latex-to-svg-backend--format-file fkey)))
-                       (with-temp-file f (insert "fmt")) f))))
+                       (with-temp-file f (insert "fmt"))
+                       (latex-to-svg-backend--write-format-stamp f binary)
+                       f))))
           (let ((f1 (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble))))
             (should f1)
             (should (file-exists-p f1))
@@ -1475,6 +1478,7 @@ kept for symmetry with the compile pipeline."
             ;; Second call: verified fresh, served from disk, no rebuild.
             (should (equal f1 (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble))))
             (should (= builds 1))))
+      (delete-file binary)
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (ert-deftest latex-to-svg-backend-ensure-format-rebuilds-when-stale ()
@@ -1482,7 +1486,7 @@ kept for symmetry with the compile pipeline."
   ;; rebuilt rather than reused.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fmt-stale" t))
         (latex-to-svg-backend-precompile t)
-        (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
         (builds 0))
     (unwind-protect
@@ -1511,7 +1515,7 @@ kept for symmetry with the compile pipeline."
   ;; `--ensure-format' skip precompilation for that preamble thereafter.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fmt-block" t))
         (latex-to-svg-backend-precompile t)
-        (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)))
     (unwind-protect
         (let* ((fkey (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble)))
@@ -1530,7 +1534,7 @@ kept for symmetry with the compile pipeline."
 (ert-deftest latex-to-svg-backend-flush-format-clears-everything ()
   ;; `latex-to-svg-backend-flush-format' deletes every `.fmt' and resets session state.
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fmt-flush" t))
-        (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)))
     (unwind-protect
         (let ((fmt-dir (latex-to-svg-backend--fmt-dir))
@@ -1540,12 +1544,12 @@ kept for symmetry with the compile pipeline."
           (with-temp-file (expand-file-name "bbb.fmt" fmt-dir) (insert "2"))
           ;; A cached SVG (in the `svg/' subtree) must survive the flush.
           (with-temp-file svg (insert "<svg/>"))
-          (puthash "aaa" t latex-to-svg-backend--format-checked)
+          (puthash "aaa" t latex-to-svg-backend--format-stamps)
           (puthash "bbb" t latex-to-svg-backend--format-blocklist)
           (latex-to-svg-backend-flush-format)
           (should-not (directory-files fmt-dir nil "\\.fmt\\'"))
           (should (file-exists-p svg))
-          (should (= 0 (hash-table-count latex-to-svg-backend--format-checked)))
+          (should (= 0 (hash-table-count latex-to-svg-backend--format-stamps)))
           (should (= 0 (hash-table-count latex-to-svg-backend--format-blocklist))))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
@@ -1555,7 +1559,7 @@ kept for symmetry with the compile pipeline."
   (skip-unless (latex-to-svg-backend-tools-available-p))
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fmt-e2e" t))
         (latex-to-svg-backend-precompile t)
-        (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)))
     (unwind-protect
         (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) (lambda () t)))
@@ -2332,7 +2336,7 @@ NEWEST is a function returning the most recently started fake process."
   (let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fmt-missing" t))
          (latex-to-svg-backend-precompile t)
          (latex-to-svg-backend-latex-program "l2s-no-such-latex")
-         (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+         (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
          (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
          (warnings nil))
     (unwind-protect
@@ -2976,7 +2980,7 @@ and one in a formula's own black.")
     (skip-unless engines)
     (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-error-e2e" t))
           (latex-to-svg-backend-precompile t)
-          (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+          (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
           (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
           (short "\\begin{equation}\nx = 1\n  + \\alsonot\n\\end{equation}")
           (long (concat "$a_{11} + a_{12} + a_{13} + a_{14} + a_{15} + a_{16} + "
@@ -3037,7 +3041,7 @@ and one in a formula's own black.")
     (skip-unless engines)
     (let ((latex-to-svg-backend-cache-directory
            (make-temp-file "l2s-baseline-e2e" t))
-          (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+          (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
           (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
           (latex-to-svg-backend-ratex-macros ""))
       (unwind-protect
@@ -3077,7 +3081,7 @@ and one in a formula's own black.")
   (skip-unless (and (latex-to-svg-backend-tools-available-p 'latex)
                     (latex-to-svg-backend-tools-available-p 'ratex)))
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-fallback-e2e" t))
-        (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+        (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
         (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
         (latex-to-svg-backend-ratex-macros "")
         (doc "$\\sideset{}{'}\\sum_{n} a_n$")
@@ -3261,7 +3265,7 @@ and one in a formula's own black.")
   (let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-local-e2e" t))
          (project (file-name-as-directory
                    (expand-file-name "my proj_x" latex-to-svg-backend-cache-directory)))
-         (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+         (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
          (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)))
     (unwind-protect
         (with-temp-buffer
@@ -3333,7 +3337,7 @@ and one in a formula's own black.")
       (setq default-directory "/tmp/paper/")
       (let ((preamble (latex-to-svg-backend--preamble))
             (latex-to-svg-backend-cache-directory (make-temp-file "l2s-dump" t))
-            (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+            (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
             (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
             dumped)
         (unwind-protect
@@ -3382,7 +3386,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
   (declare (indent 0) (debug t))
   `(let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-stamp" t))
           (latex-to-svg-backend-precompile t)
-          (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+          (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
           (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
           (binary (make-temp-file "l2s-bin"))
           (builds 0))
@@ -3415,7 +3419,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
         (latex-to-svg-backend-invalidate-format)
         (should-not (file-exists-p fmt))
         (should-not (file-exists-p (latex-to-svg-backend--format-stamp-file fmt)))
-        (should-not (gethash fkey latex-to-svg-backend--format-checked))
+        (should-not (gethash fkey latex-to-svg-backend--format-stamps))
         (should-not (gethash fkey latex-to-svg-backend--format-blocklist))
         (should (file-exists-p other))
         (should (file-exists-p (latex-to-svg-backend--format-stamp-file other)))
@@ -3432,7 +3436,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
          (project (file-name-as-directory
                    (expand-file-name "my proj_x" latex-to-svg-backend-cache-directory)))
          (latex-to-svg-backend-precompile t)
-         (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+         (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
          (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)))
     (unwind-protect
         (with-temp-buffer
@@ -3464,39 +3468,94 @@ The binary is bound to `binary'; the dump is stubbed to write the
 ;;;; Stamps and collection of the `.fmt' files
 
 (ert-deftest latex-to-svg-backend-format-stamp-decides-freshness ()
-  ;; A `.fmt' file is reused in a new session while its stamp names the
-  ;; binary and its mtime; another binary, a changed mtime, or no stamp
-  ;; dumps it again.  The mtime of the `.fmt' file plays no part.
+  ;; A `.fmt' file is reused while its stamp names the binary and its
+  ;; mtime; another binary, a changed mtime, a stamp from before 0.16.0
+  ;; or no stamp dumps it again, in the same session too.  The mtime of
+  ;; the `.fmt' file plays no part.
   (latex-to-svg-backend-tests--with-format-cache
     (let* ((fmt (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble)))
            (stamp (latex-to-svg-backend--format-stamp-file fmt))
+           (again (lambda ()
+                    (latex-to-svg-backend--ensure-format
+                     (latex-to-svg-backend--preamble))))
            (new-session (lambda ()
-                          (clrhash latex-to-svg-backend--format-checked)
-                          (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble)))))
+                          (clrhash latex-to-svg-backend--format-stamps)
+                          (funcall again))))
       (should (= builds 1))
       (should (equal (with-temp-buffer (insert-file-contents stamp)
                                        (read (current-buffer)))
-                     (latex-to-svg-backend--binary-stamp binary)))
+                     (list :binary
+                           (latex-to-svg-backend--file-stamp binary))))
       ;; A `.fmt' file older than the binary is still the binary's.
       (set-file-times fmt '(1 0))
       (should (equal fmt (funcall new-session)))
       (should (= builds 1))
-      ;; The same binary, rebuilt.
+      ;; The same binary, rebuilt, during the session.
       (set-file-times binary '(2 0))
-      (should (equal fmt (funcall new-session)))
+      (should (equal fmt (funcall again)))
       (should (= builds 2))
       ;; Another binary.
       (let ((binary (make-temp-file "l2s-other-bin")))
         (unwind-protect
             (cl-letf (((symbol-function 'latex-to-svg-backend--latex-binary)
                        (lambda (&optional _program) binary)))
-              (funcall new-session)
+              (funcall again)
               (should (= builds 3)))
           (delete-file binary)))
+      ;; A stamp from before 0.16.0.
+      (with-temp-file stamp
+        (prin1 (list :binary binary
+                     :mtime (file-attribute-modification-time
+                             (file-attributes binary)))
+               (current-buffer)))
+      (funcall new-session)
+      (should (= builds 4))
       ;; A `.fmt' file dumped before stamps existed.
       (delete-file stamp)
       (funcall new-session)
-      (should (= builds 4)))))
+      (should (= builds 5)))))
+
+(ert-deftest latex-to-svg-backend-format-stamp-follows-the-distribution ()
+  ;; The dump's `-recorder' list names the distribution's `.fmt' file and
+  ;; the files of a TeX tree: the stamp records that `.fmt' file and the
+  ;; tree's `ls-R', and a change of either makes the `.fmt' file stale.
+  ;; The `ls-R' is a link into `/var', as on Debian.  A file in no tree
+  ;; adds nothing.
+  (let* ((root (file-name-as-directory (make-temp-file "l2s-tree" t)))
+         (binary (make-temp-file "l2s-bin"))
+         (base (expand-file-name "texmf-var/web2c/pdftex/latex.fmt" root))
+         (sty (expand-file-name "texmf-dist/tex/latex/amsmath/amsmath.sty" root))
+         (link (expand-file-name "texmf-dist/ls-R" root))
+         (index (expand-file-name "var/ls-R-TEXLIVEDIST" root))
+         (outside (make-temp-file "l2s-macros"))
+         (fls (expand-file-name "dump.fls" root)))
+    (unwind-protect
+        (progn
+          (dolist (file (list base sty index))
+            (make-directory (file-name-directory file) t)
+            (with-temp-file file (insert "x")))
+          (make-symbolic-link index link)
+          (with-temp-file fls
+            (insert (format "PWD %s\nINPUT %s\nINPUT %s\nINPUT %s\nINPUT dump.tex\n\
+OUTPUT dump.fmt\n" root base sty outside)))
+          (let* ((inputs (latex-to-svg-backend--recorded-inputs fls))
+                 (stamp (latex-to-svg-backend--format-stamp binary inputs)))
+            (should (equal inputs (list base sty outside)))
+            (should (equal (car (plist-get stamp :latex-fmt)) base))
+            (should (equal (mapcar #'car (plist-get stamp :ls-r))
+                           (list index)))
+            (should (latex-to-svg-backend--format-fresh-p stamp binary))
+            (set-file-times index '(3 0))
+            (should-not (latex-to-svg-backend--format-fresh-p stamp binary))
+            (setq stamp (latex-to-svg-backend--format-stamp binary inputs))
+            (set-file-times base '(3 0))
+            (should-not (latex-to-svg-backend--format-fresh-p stamp binary))
+            (setq stamp (latex-to-svg-backend--format-stamp binary inputs))
+            (delete-file base)
+            (should-not (latex-to-svg-backend--format-fresh-p stamp binary))))
+      (delete-file binary)
+      (delete-file outside)
+      (delete-directory root t))))
 
 (ert-deftest latex-to-svg-backend-unreadable-format-stamp-dumps-again ()
   ;; A truncated stamp is treated as stale, with no warning: the dump
@@ -3506,7 +3565,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
           (fmt (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble))))
       (with-temp-file (latex-to-svg-backend--format-stamp-file fmt)
         (insert "(:binary \"/x"))
-      (clrhash latex-to-svg-backend--format-checked)
+      (clrhash latex-to-svg-backend--format-stamps)
       (cl-letf (((symbol-function 'display-warning)
                  (lambda (&rest _) (cl-incf warnings))))
         (should (equal fmt (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble)))))
@@ -3517,6 +3576,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
   ;; The dump runs `latex -ini' on the preamble followed by TeX's `\dump',
   ;; and a successful one writes the stamp next to the `.fmt'.
   (let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-dump" t))
+         (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
          (binary (make-temp-file "l2s-bin"))
          (inhibit-message t)
          argv source)
@@ -3530,16 +3590,24 @@ The binary is bound to `binary'; the dump is stubbed to write the
                                    (car (last args))))
                      (with-temp-file (latex-to-svg-backend--format-file "abc")
                        (insert "fmt"))
+                     (with-temp-file (expand-file-name
+                                      "abc.fls" (latex-to-svg-backend--fmt-dir))
+                       (insert "INPUT /no/such/latex.fmt\n"))
                      0)))
           (let ((fmt (latex-to-svg-backend--build-format "abc" (latex-to-svg-backend--preamble))))
             (should (equal (cdr argv)
-                           (list "-ini" "-jobname=abc" "&latex"
+                           (list "-ini" "-recorder" "-jobname=abc" "&latex"
                                  (expand-file-name
                                   "abc.tex" (latex-to-svg-backend--fmt-dir)))))
             (should (equal source (concat (latex-to-svg-backend--preamble)
                                           "\n\\dump\n")))
             (should (equal fmt (latex-to-svg-backend--format-file "abc")))
-            (should (latex-to-svg-backend--format-fresh-p fmt binary))))
+            (should (latex-to-svg-backend--format-fresh-p
+                     (latex-to-svg-backend--read-format-stamp fmt) binary))
+            (should (equal (gethash "abc" latex-to-svg-backend--format-stamps)
+                           (latex-to-svg-backend--read-format-stamp fmt)))
+            (should-not (file-exists-p
+                         (expand-file-name "abc.fls" (latex-to-svg-backend--fmt-dir))))))
       (delete-file binary)
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
@@ -3554,7 +3622,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
                                   (file-attributes fmt)))))))
       (dolist (session '(new same))
         (when (eq session 'new)
-          (clrhash latex-to-svg-backend--format-checked))
+          (clrhash latex-to-svg-backend--format-stamps))
         (set-file-times fmt '(1 0))
         (should (equal fmt (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble))))
         (should (< (funcall age) 60)))

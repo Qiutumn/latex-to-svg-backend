@@ -176,13 +176,14 @@ short: TeX wraps log lines near column 80."
 
 ;; Bookkeeping of the precompiled `.fmt' files, keyed by
 ;; `latex-to-svg-backend--format-key' (a hash of the preamble text + LaTeX
-;; program).  `--format-checked' records keys whose `.fmt' file was verified
-;; fresh this session, so the freshness check runs at most once per key;
-;; `--format-blocklist' records keys whose dump failed, so precompilation
-;; is abandoned for them for the rest of the session and the backend falls
-;; back to full compiles.
-(defvar latex-to-svg-backend--format-checked (make-hash-table :test 'equal)
-  "Keys of the `.fmt' files verified fresh this session.")
+;; program).  `--format-stamps' holds the stamp of each `.fmt' file, read
+;; from disk once per session, so each compile checks the files it names
+;; without reading it; `--format-blocklist' records keys whose dump
+;; failed, so precompilation is abandoned for them for the rest of the
+;; session and the backend falls back to full compiles.
+(defvar latex-to-svg-backend--format-stamps (make-hash-table :test 'equal)
+  "Map of `.fmt' key to its stamp, read once per session.
+See `latex-to-svg-backend--format-stamp'.")
 
 (defvar latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal)
   "Keys of the `.fmt' files whose dump failed; precompilation skipped.")
@@ -352,58 +353,148 @@ distinct `.fmt' file (and a dump on the next render)."
 
 (defun latex-to-svg-backend--format-stamp-file (format-file)
   "Return the path of the stamp (`.eld') of FORMAT-FILE.
-The stamp names the LaTeX binary that dumped FORMAT-FILE (see
-`latex-to-svg-backend--binary-stamp')."
+The stamp names the files FORMAT-FILE was dumped from (see
+`latex-to-svg-backend--format-stamp')."
   (concat (file-name-sans-extension format-file) ".eld"))
 
-(defun latex-to-svg-backend--binary-stamp (binary)
-  "Return the plist identifying the LaTeX BINARY, for a `.fmt' stamp.
-That is `(:binary TRUENAME :mtime MTIME)': the file BINARY resolves to
-and its modification time.  A TeX Live release installs its binaries
-under a directory named after its year, so an upgrade changes the
-truename; another TeX first on variable `exec-path' changes either."
-  (let ((truename (file-truename binary)))
-    (list :binary truename
-          :mtime (file-attribute-modification-time
-                  (file-attributes truename)))))
+(defun latex-to-svg-backend--file-stamp (file)
+  "Return (NAME . MTIME) for FILE, or nil when it does not exist.
+NAME is FILE with the symbolic links of its last component followed
+\(`file-chase-links'), and MTIME the modification time of the file it
+names.  `file-attributes' follows the links of the directories, so
+the pair describes the file itself: the `ls-R' that Debian links into
+the tree, or the binary behind `/Library/TeX/texbin/latex'.  It costs
+a fraction of `file-truename', which resolves every component in Lisp
+and takes most of a millisecond for a TeX binary."
+  (let ((name (file-chase-links file)))
+    (when-let* ((mtime (file-attribute-modification-time
+                        (file-attributes name))))
+      (cons name mtime))))
 
-(defun latex-to-svg-backend--format-fresh-p (format-file binary)
-  "Return non-nil when FORMAT-FILE was dumped by the LaTeX BINARY.
-That is when its stamp matches `latex-to-svg-backend--binary-stamp' for
-BINARY.  A `.fmt' file with no stamp is stale, so one dumped before
-stamps existed is dumped again once.  So is one with an unreadable
-stamp, with no warning: the dump writes a new stamp, and warns when it
-cannot (see `latex-to-svg-backend--write-format-stamp')."
+(defun latex-to-svg-backend--file-unchanged-p (entry)
+  "Return non-nil when ENTRY, a (FILE . MTIME) pair, still holds.
+That is when FILE exists and its modification time is MTIME."
+  (and (consp entry)
+       (when-let* ((mtime (file-attribute-modification-time
+                           (file-attributes (car entry)))))
+         (time-equal-p mtime (cdr entry)))))
+
+(defun latex-to-svg-backend--recorded-inputs (fls)
+  "Return the absolute names of the files TeX read, from FLS.
+FLS is the file list `-recorder' makes TeX write; nil when it is
+missing, as from a TeX that does not write one."
+  (when (file-readable-p fls)
+    (with-temp-buffer
+      (insert-file-contents fls)
+      (let ((files nil))
+        (while (re-search-forward "^INPUT \\(.+\\)$" nil t)
+          (let ((file (match-string 1)))
+            (when (file-name-absolute-p file)
+              (push file files))))
+        (delete-dups (nreverse files))))))
+
+(defun latex-to-svg-backend--tree-indexes (files)
+  "Return the `ls-R' files of the TeX trees holding FILES.
+kpathsea finds a tree's files through the `ls-R' at its root, so
+whatever installs or updates files in the tree regenerates it with
+`mktexlsr': `tlmgr', and the package managers of the Linux
+distributions.  A file in no such tree adds nothing."
+  (let ((seen (make-hash-table :test 'equal))
+        (indexes nil))
+    (dolist (file files)
+      (let ((dir (file-name-directory file))
+            (found nil))
+        (while (and dir (not found) (not (gethash dir seen)))
+          (puthash dir t seen)
+          (let ((index (expand-file-name "ls-R" dir))
+                (parent (file-name-directory (directory-file-name dir))))
+            (if (file-exists-p index)
+                (setq found index)
+              (setq dir (unless (equal parent dir) parent)))))
+        (when found
+          (push found indexes))))
+    (nreverse indexes)))
+
+(defun latex-to-svg-backend--format-stamp (binary &optional inputs)
+  "Return the stamp of a `.fmt' file dumped by the LaTeX BINARY.
+INPUTS are the files the dump read (see
+`latex-to-svg-backend--recorded-inputs').  The stamp is a plist whose
+values are (NAME . MTIME) pairs (see
+`latex-to-svg-backend--file-stamp'):
+
+  :binary     BINARY.  An upgrade of TeX replaces the binary, which
+              changes its modification time; another TeX first on
+              variable `exec-path' changes either.
+  :latex-fmt  the distribution's `.fmt' file the dump started from,
+              such as `latex.fmt', which the distribution dumps again
+              when its kernel or its binary is updated.
+  :ls-r       a list, the `ls-R' file of each TeX tree the dump read
+              from (see `latex-to-svg-backend--tree-indexes'), which
+              changes when a package is updated.
+
+The last two are missing without INPUTS."
+  (let ((base (seq-find (lambda (file) (string-suffix-p ".fmt" file))
+                        inputs))
+        (indexes (delq nil (mapcar #'latex-to-svg-backend--file-stamp
+                                   (latex-to-svg-backend--tree-indexes
+                                    inputs)))))
+    (append (list :binary (latex-to-svg-backend--file-stamp binary))
+            (when-let* ((entry (and base (latex-to-svg-backend--file-stamp
+                                          base))))
+              (list :latex-fmt entry))
+            (when indexes
+              (list :ls-r indexes)))))
+
+(defun latex-to-svg-backend--read-format-stamp (format-file)
+  "Return the stamp of FORMAT-FILE, or nil when it cannot be read.
+An unreadable stamp is nil with no warning: the `.fmt' file is then
+stale, and the dump writes a new stamp, and warns when it cannot (see
+`latex-to-svg-backend--write-format-stamp')."
   (let ((file (latex-to-svg-backend--format-stamp-file format-file)))
     (when (file-readable-p file)
-      (when-let* ((stamp (condition-case nil
-                             (with-temp-buffer
-                               (insert-file-contents file)
-                               (read (current-buffer)))
-                           ((end-of-file invalid-read-syntax file-error) nil)))
-                  ((consp stamp))
-                  (mtime (plist-get stamp :mtime))
-                  (current (latex-to-svg-backend--binary-stamp binary)))
-        (and (equal (plist-get stamp :binary) (plist-get current :binary))
-             (plist-get current :mtime)
-             (time-equal-p mtime (plist-get current :mtime)))))))
+      (condition-case nil
+          (with-temp-buffer
+            (insert-file-contents file)
+            (read (current-buffer)))
+        ((end-of-file invalid-read-syntax file-error) nil)))))
 
-(defun latex-to-svg-backend--write-format-stamp (format-file binary)
-  "Record that the LaTeX BINARY dumped FORMAT-FILE, in its stamp.
-A stamp that cannot be written is reported once per buffer (see
-`latex-to-svg-backend--warn'); the `.fmt' file still serves this
-session and is dumped again in the next."
-  (let ((file (latex-to-svg-backend--format-stamp-file format-file)))
+(defun latex-to-svg-backend--format-fresh-p (stamp binary)
+  "Return non-nil when the `.fmt' file of STAMP is fresh for BINARY.
+STAMP is a plist of `latex-to-svg-backend--format-stamp'.  It is fresh
+when its binary is BINARY and every file it names exists with the
+modification time it records.  A stamp written before 0.16.0 names
+the binary by a string, and is stale, so its `.fmt' file is dumped
+again once; so is a `.fmt' file with no stamp."
+  (let ((entry (and (consp stamp) (plist-get stamp :binary))))
+    (and (consp entry)
+         (equal (car entry) (file-chase-links binary))
+         (latex-to-svg-backend--file-unchanged-p entry)
+         (seq-every-p #'latex-to-svg-backend--file-unchanged-p
+                      (append (when-let* ((base (plist-get stamp :latex-fmt)))
+                                (list base))
+                              (plist-get stamp :ls-r))))))
+
+(defun latex-to-svg-backend--write-format-stamp (format-file binary
+                                                             &optional inputs)
+  "Write the stamp of FORMAT-FILE, dumped by BINARY, and return it.
+INPUTS are the files the dump read (see
+`latex-to-svg-backend--format-stamp').  A stamp that cannot be written
+is reported once per buffer (see `latex-to-svg-backend--warn'); the
+`.fmt' file still serves this session and is dumped again in the
+next."
+  (let ((file (latex-to-svg-backend--format-stamp-file format-file))
+        (stamp (latex-to-svg-backend--format-stamp binary inputs)))
     (condition-case err
         (with-temp-file file
-          (prin1 (latex-to-svg-backend--binary-stamp binary) (current-buffer)))
+          (prin1 stamp (current-buffer)))
       (file-error
        (latex-to-svg-backend--warn
         "writing a .fmt stamp"
         (format "Cannot write %s: %s.
 The preamble is precompiled again in each session.  %s"
                 file (error-message-string err)
-                (latex-to-svg-backend--cache-fix)))))))
+                (latex-to-svg-backend--cache-fix)))))
+    stamp))
 
 (defun latex-to-svg-backend--touch-format (format-file)
   "Bump FORMAT-FILE's modification time and return FORMAT-FILE, or nil.
@@ -437,6 +528,9 @@ subdirectory and runs the TeX PROGRAM on it in `-ini' mode (by default
 `latex-to-svg-backend-latex-program'), which writes
 `<cache>/fmt/FKEY.fmt'.  The build log is in
 the `*latex-to-svg-backend-precompile-log*' buffer for inspection.
+TeX's `-recorder' lists the files the dump read, from which the stamp
+is written (see `latex-to-svg-backend--write-format-stamp') and kept
+in `latex-to-svg-backend--format-stamps'.
 
 A preamble that will not dump exits non-zero and yields nil (the caller
 falls back to a full compile, which reports the real LaTeX error).  A
@@ -449,6 +543,7 @@ cannot be started is reported once per buffer (see
          (fmt (concat base ".fmt"))
          (pre-tex (concat base ".tex"))
          (log (concat base ".log"))
+         (fls (concat base ".fls"))
          (buffer (get-buffer-create "*latex-to-svg-backend-precompile-log*")))
     (with-current-buffer buffer (erase-buffer))
     ;; Pin UTF-8: see `latex-to-svg-backend--compile' on why the encoding is
@@ -464,6 +559,7 @@ cannot be started is reported once per buffer (see
                                      nil buffer nil
                                      (concat "-output-directory=" dir)
                                      "-ini"
+                                     "-recorder"
                                      (concat "-jobname=" fkey)
                                      (concat "&" (latex-to-svg-backend--latex-format-name
                                                   program))
@@ -482,66 +578,70 @@ M-x customize-group RET latex-to-svg-backend."
                                tex (error-message-string err) tex))
                       nil))
                  (delete-file pre-tex))))
-      (if (and (eql rv 0) (file-exists-p fmt))
-          (progn
-            (delete-file log)
-            (when-let* ((binary (latex-to-svg-backend--latex-binary program)))
-              (latex-to-svg-backend--write-format-stamp fmt binary))
-            fmt)
-        (delete-file fmt)
-        nil))))
+      (unwind-protect
+          (if (and (eql rv 0) (file-exists-p fmt))
+              (progn
+                (delete-file log)
+                (when-let* ((binary (latex-to-svg-backend--latex-binary
+                                     program)))
+                  (puthash fkey
+                           (latex-to-svg-backend--write-format-stamp
+                            fmt binary
+                            (latex-to-svg-backend--recorded-inputs fls))
+                           latex-to-svg-backend--format-stamps))
+                fmt)
+            (delete-file fmt)
+            nil)
+        (delete-file fls)))))
 
 (defun latex-to-svg-backend--ensure-format (preamble &optional program)
   "Return the path of a fresh precompiled `.fmt' file of PREAMBLE, or nil.
 PREAMBLE is the text of `latex-to-svg-backend--preamble'; PROGRAM is
 the TeX program that dumps and loads it, by default
-`latex-to-svg-backend-latex-program'.  Dumps the
-`.fmt' file on first use (synchronously, once per session per
-preamble) and caches it on disk.  Rebuilds it when its stamp names
-another LaTeX binary (see `latex-to-svg-backend--format-fresh-p'), as
-after a TeX toolchain upgrade, where `latex' would otherwise refuse
-the `.fmt' file on every compile.  Bumps the mtime of the `.fmt' file it
-returns (see `latex-to-svg-backend--touch-format').  Returns nil — so
-the caller uses a full compile — when precompilation is off, the dump
-fails, or the `.fmt' file has been blocklisted after an earlier
-failure.  When PROGRAM is not found, it returns nil without
-blocklisting, so the compile reports the missing program and the dump
-runs once PROGRAM is installed.  A blocklisted `.fmt' file is reported
-once per buffer (see `latex-to-svg-backend--report-blocked-format')."
+`latex-to-svg-backend-latex-program'.  Dumps the `.fmt' file on first
+use (synchronously) and caches it on disk.  Before each use it checks
+the stamp, read once per session (see
+`latex-to-svg-backend--format-stamps'), and dumps the `.fmt' file
+again when a file the stamp names has changed (see
+`latex-to-svg-backend--format-fresh-p'): another LaTeX binary, as
+after a TeX toolchain upgrade, where `latex' would otherwise refuse the
+`.fmt' file on every compile, or an update of the distribution.  Bumps
+the mtime of the `.fmt' file it returns (see
+`latex-to-svg-backend--touch-format').  Returns nil — so the caller
+uses a full compile — when precompilation is off, the dump fails, or
+the `.fmt' file has been blocklisted after an earlier failure.  When
+PROGRAM is not found, it returns nil without blocklisting, so the
+compile reports the missing program and the dump runs once PROGRAM is
+installed.  A blocklisted `.fmt' file is reported once per buffer
+\(see `latex-to-svg-backend--report-blocked-format')."
   (when latex-to-svg-backend-precompile
     (let ((fkey (latex-to-svg-backend--format-key preamble program)))
       (if (gethash fkey latex-to-svg-backend--format-blocklist)
           (progn (latex-to-svg-backend--report-blocked-format fkey) nil)
-        (let ((fmt (latex-to-svg-backend--format-file fkey))
-              (latex-bin (latex-to-svg-backend--latex-binary program)))
-          (cond
-           ;; Verified fresh already this session.
-           ((and (gethash fkey latex-to-svg-backend--format-checked)
-                 (file-exists-p fmt))
-            (latex-to-svg-backend--touch-format fmt))
-           ;; On disk and dumped by this binary -> trust it.
-           ((and (file-exists-p fmt)
-                 (or (null latex-bin)
-                     (latex-to-svg-backend--format-fresh-p fmt latex-bin)))
-            (puthash fkey t latex-to-svg-backend--format-checked)
-            (latex-to-svg-backend--touch-format fmt))
-           ;; Missing or stale -> (re)build.
-           (t
+        (let* ((fmt (latex-to-svg-backend--format-file fkey))
+               (latex-bin (latex-to-svg-backend--latex-binary program))
+               (exists (file-exists-p fmt)))
+          (if (and exists
+                   (or (null latex-bin)
+                       (latex-to-svg-backend--format-fresh-p
+                        (or (gethash fkey latex-to-svg-backend--format-stamps)
+                            (puthash fkey
+                                     (latex-to-svg-backend--read-format-stamp fmt)
+                                     latex-to-svg-backend--format-stamps))
+                        latex-bin)))
+              (latex-to-svg-backend--touch-format fmt)
+            ;; Missing or stale -> (re)build.
+            (remhash fkey latex-to-svg-backend--format-stamps)
             (delete-file fmt)
             (delete-file (latex-to-svg-backend--format-stamp-file fmt))
             (condition-case nil
-                (if-let* ((built (latex-to-svg-backend--build-format
-                                  fkey preamble program)))
-                    (progn
-                      (puthash fkey t latex-to-svg-backend--format-checked)
-                      built)
-                  ;; The dump failed.  Give up on this preamble for the
-                  ;; session: retrying would run a synchronous `latex -ini'
-                  ;; for every equation, and a preamble that will not dump
-                  ;; does not start dumping on the next attempt.
-                  (latex-to-svg-backend--block-format fmt)
-                  nil)
-              (file-missing nil)))))))))
+                (or (latex-to-svg-backend--build-format fkey preamble program)
+                    ;; The dump failed.  Give up on this preamble for the
+                    ;; session: retrying would run a synchronous `latex
+                    ;; -ini' for every equation, and a preamble that will
+                    ;; not dump does not start dumping on the next attempt.
+                    (progn (latex-to-svg-backend--block-format fmt) nil))
+              (file-missing nil))))))))
 
 (defun latex-to-svg-backend--block-format (format-file)
   "Abandon FORMAT-FILE, whose dump failed, for the rest of the session.
@@ -555,7 +655,7 @@ The failure is reported in the current buffer (see
 `latex-to-svg-backend--report-blocked-format')."
   (let ((fkey (file-name-base format-file)))
     (puthash fkey t latex-to-svg-backend--format-blocklist)
-    (remhash fkey latex-to-svg-backend--format-checked)
+    (remhash fkey latex-to-svg-backend--format-stamps)
     (delete-file format-file)
     (delete-file (latex-to-svg-backend--format-stamp-file format-file))
     (latex-to-svg-backend--report-blocked-format fkey)))
@@ -577,13 +677,13 @@ M-x latex-to-svg-backend-invalidate-format precompiles it again."))
   "Delete all precompiled `.fmt' files and forget them.
 
 Removes every `.fmt' file in the cache `fmt/' subdirectory, with its
-stamp, and clears this session's freshness and blocklist tracking, so
-the next render dumps a fresh `.fmt' file from the current preamble.
-An escape hatch for a stale `.fmt' file the automatic freshness check
-missed — normally a TeX toolchain upgrade is handled on its own (the
-stamp names another binary), so this is rarely needed."
+stamp, and forgets this session's stamps and blocklist, so the next
+render dumps a fresh `.fmt' file from the current preamble.  An escape
+hatch for a stale `.fmt' file the stamp missed — a TeX toolchain
+upgrade or an update of the distribution is handled on its own (see
+`latex-to-svg-backend--format-stamp'), so this is rarely needed."
   (interactive)
-  (clrhash latex-to-svg-backend--format-checked)
+  (clrhash latex-to-svg-backend--format-stamps)
   (clrhash latex-to-svg-backend--format-blocklist)
   (let ((dir (expand-file-name "fmt" (latex-to-svg-backend--cache-dir))))
     (when (file-directory-p dir)
@@ -598,7 +698,7 @@ A `.fmt' file holds the files its preamble loads as they were when it
 was dumped, and nothing detects an edit to them, so after editing one
 \(say the `macros.tex' of an `\\input{macros.tex}') call this, then
 compile the equations again.  Deletes the `.fmt' file with its stamp
-and forgets this session's freshness check and blocklist entry for it,
+and forgets this session's stamp and blocklist entry for it,
 so the next compile dumps it again: that also retries a preamble whose
 dump failed, after the missing package is installed.  Other preambles'
 `.fmt' files stay (see `latex-to-svg-backend-flush-format')."
@@ -608,7 +708,7 @@ dump failed, after the missing package is installed.  Other preambles'
                       (mapcar #'funcall latex-to-svg-backend--format-programs)))
       (let* ((fkey (latex-to-svg-backend--format-key preamble program))
              (fmt (latex-to-svg-backend--format-file fkey)))
-        (remhash fkey latex-to-svg-backend--format-checked)
+        (remhash fkey latex-to-svg-backend--format-stamps)
         (remhash fkey latex-to-svg-backend--format-blocklist)
         (delete-file fmt)
         (delete-file (latex-to-svg-backend--format-stamp-file fmt))))))

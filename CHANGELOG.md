@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   typo in a document made every later compile in the session slower.
   After editing a file the preamble loads, `M-x
   latex-to-svg-backend-invalidate-format` dumps the `.fmt` file again.
+- The `.fmt` file's stamp also records the distribution's `latex.fmt`,
+  which the distribution dumps again when its kernel or its binary is
+  updated, and the `ls-R` index of each TeX tree the dump read from,
+  which changes when a package is installed or updated. Each compile
+  checks the stamp, so a TeX upgrade or a `tlmgr update` during a
+  session dumps the `.fmt` file again at the next compile. Before, only
+  the binary was recorded, and it was checked once per session. The
+  dump runs with `-recorder` to find these files. Every `.fmt` file is
+  dumped again once, since its stamp lacks them. On Debian, Fedora and
+  Arch the package hooks regenerate `ls-R`; this is not tested.
 - Each compile runs in a scratch directory under `tmp/` in the cache
   directory, instead of `temporary-file-directory`, and moves its SVG
   into `svg/` with a rename. The cache key and the SVG are unchanged.
