@@ -147,7 +147,9 @@ preamble, which speeds each compile up noticeably.
 
 When the dump fails, or a compile that loaded the `.fmt' file fails,
 the backend falls back to embedding the full preamble in each equation —
-correctness never depends on this option.  A `.fmt' file dumped by
+correctness never depends on this option.  A failed compile of a
+tentative request (see `latex-to-svg-backend') is the exception: it
+keeps the `.fmt' file.  A `.fmt' file dumped by
 another LaTeX binary (after a TeX toolchain upgrade, or with another TeX
 on the variable `exec-path') is detected and dumped again;
 `latex-to-svg-backend-flush-format' is the manual escape hatch."
@@ -557,8 +559,11 @@ Called from the two ways precompilation can fail, which REASON names:
 the log stays in the `*latex-to-svg-backend-precompile-log*' buffer), or
 `load', the dump succeeded but a compile that loaded it failed.  In the
 latter case the same equation is about to be retried with the full
-inline preamble, so a genuinely broken equation is not mistaken for a
-broken `.fmt' file.
+inline preamble, and only that compile's failure is recorded, so an
+equation is not refused because of a broken `.fmt' file.  The `.fmt'
+file is blocked before the retry shows whether it was the cause: a
+request whose failure says nothing about it is tentative, and blocks
+nothing (see `latex-to-svg-backend--tentative-p').
 
 The failure is reported (see `latex-to-svg-backend--report-blocked-format'):
 in the buffers waiting for the content KEY when it is given, as from the
@@ -853,6 +858,10 @@ the failure handled (see `latex-to-svg-backend--compile-failed'): the log
 is saved, and when the TeX program stopped on an error in the document
 \(see `latex-to-svg-backend--latex-formula-error') the failure is
 recorded.  NO-FORMAT forces that inline path (it is set on the retry).
+When every request for KEY is tentative (see
+`latex-to-svg-backend--tentative-p'), a compile that loaded a `.fmt'
+file and failed is neither retried nor blocks the `.fmt' file: the
+failure is handled at once.
 
 No color is baked in: the equation's default ink becomes the literal
 `currentColor', so the SVG is color-independent and is tinted to the
@@ -942,8 +951,12 @@ A theme change therefore re-tints from cache without recompiling."
                         (format "[store] storing the SVG failed: %s"
                                 (error-message-string err)))
                        nil))))
+              ;; Its failure says nothing about the `.fmt' file.
+              (tentative (and (not stored) format-file
+                              (latex-to-svg-backend--tentative-p key)))
               ;; A program that is not found fails with any preamble.
               (retry-format (and (not stored) format-file
+                                 (not tentative)
                                  (not (stringp (cdr exit))))))
          (unwind-protect
              (cond

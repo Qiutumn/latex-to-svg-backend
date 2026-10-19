@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the queue, a running one has its process killed and its scratch
   directory deleted, and its slot goes to the next compile. A stopped
   compile records no failure.
+- `:tentative` keyword of `latex-to-svg-backend`, for a request whose
+  failure is expected and says nothing about the `.fmt` file, such as
+  an equation typeset at each pause while the user types it. When a
+  compile that loaded the `.fmt` file fails, a request without it
+  stops using the `.fmt` file for the session and compiles the
+  equation again with the full preamble, so the first half-typed
+  formula made every later compile slower. A tentative compile keeps
+  the `.fmt` file and is not compiled again; the callback still gets
+  the failure. A tentative failure is not recorded, with any engine,
+  so a later request for the same equation compiles it again. Requests for the same equation share one compile,
+  which is tentative only when every one of them is.
 
 ### Changed
 

@@ -3826,6 +3826,101 @@ The binary is bound to `binary'; the dump is stubbed to write the
           (should (file-directory-p new)))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
+;;;; Tentative requests
+
+(defmacro latex-to-svg-backend-tests--with-fmt (&rest body)
+  "Run BODY with the public API, each compile loading the `.fmt' file `fmt'."
+  (declare (indent 0) (debug t))
+  `(latex-to-svg-backend-tests--with-public-api
+     (let ((fmt (latex-to-svg-backend--format-file "fake-format")))
+       (with-temp-file fmt (insert "fake format"))
+       (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
+                  (lambda (_preamble &optional _program) fmt)))
+         ,@body))))
+
+(ert-deftest latex-to-svg-backend-tentative-failure-keeps-the-format ()
+  ;; A tentative compile that loaded the `.fmt' file and failed is not
+  ;; run again, keeps the `.fmt' file, and records nothing: the callback
+  ;; gets the failure, and a later request compiles again.
+  (latex-to-svg-backend-tests--with-fmt
+    (let* ((doc "$\\nocommand$")
+           (key (latex-to-svg-backend--cache-key doc))
+           (outcomes nil))
+      (latex-to-svg-backend doc :tentative t :quiet t
+                            :callback (lambda (o) (push o outcomes)))
+      (latex-to-svg-backend-tests--fail-latex
+       (car l2s-test-processes) doc "Undefined control sequence." 1
+       "$\\nocommand")
+      (latex-to-svg-backend-tests--run-timers)
+      (should (= (length l2s-test-processes) 1))
+      (should (file-exists-p fmt))
+      (should (zerop (hash-table-count latex-to-svg-backend--format-blocklist)))
+      (should-not l2s-test-warnings)
+      (should-not latex-to-svg-backend--running)
+      (should (equal (mapcar (lambda (o) (plist-get o :kind)) outcomes)
+                     '(formula)))
+      (should (equal (plist-get (car outcomes) :message)
+                     "Undefined control sequence."))
+      (should-not (file-exists-p (latex-to-svg-backend--meta-file key)))
+      (latex-to-svg-backend doc :callback #'ignore)
+      (should (= (length l2s-test-processes) 2)))))
+
+(ert-deftest latex-to-svg-backend-tentative-merged-with-a-normal-request ()
+  ;; A compile is tentative only when every request is: with a normal one
+  ;; waiting too, the `.fmt' file is blocked and the equation retried.
+  (latex-to-svg-backend-tests--with-fmt
+    (let ((doc "$\\nocommand$"))
+      (latex-to-svg-backend doc :tentative t :quiet t :callback #'ignore)
+      (latex-to-svg-backend doc :quiet t :callback #'ignore)
+      (should (= (length l2s-test-processes) 1))
+      (latex-to-svg-backend-tests--fail-latex
+       (car l2s-test-processes) doc "Undefined control sequence." 1
+       "$\\nocommand")
+      (should (= (length l2s-test-processes) 2))
+      (should-not (file-exists-p fmt))
+      (should (gethash "fake-format" latex-to-svg-backend--format-blocklist))
+      (latex-to-svg-backend-tests--run-timers))))
+
+(ert-deftest latex-to-svg-backend-tentative-failure-is-never-recorded ()
+  ;; Without a `.fmt' file, and with RaTeX, a tentative failure is not
+  ;; recorded either, so a later request compiles again.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((doc "$\\nocommand$"))
+      (latex-to-svg-backend doc :tentative t :quiet t :callback #'ignore)
+      (latex-to-svg-backend-tests--fail-latex
+       (car l2s-test-processes) doc "Undefined control sequence." 1
+       "$\\nocommand")
+      (latex-to-svg-backend doc :engine 'ratex :tentative t :quiet t
+                            :callback #'ignore)
+      (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
+      (latex-to-svg-backend-tests--run-timers)
+      (dolist (engine '(latex ratex))
+        (should-not (file-exists-p
+                     (latex-to-svg-backend--meta-file
+                      (latex-to-svg-backend--cache-key doc engine)))))
+      (latex-to-svg-backend doc :callback #'ignore)
+      (latex-to-svg-backend doc :engine 'ratex :callback #'ignore)
+      (should (= (length l2s-test-processes) 4)))))
+
+(ert-deftest latex-to-svg-backend-tentative-stays-tentative-in-the-fallback ()
+  ;; RaTeX rejects the formula; the LaTeX fallback loads the `.fmt' file
+  ;; and fails too: the request is still tentative there.
+  (latex-to-svg-backend-tests--with-fmt
+    (let ((doc "$\\nocommand$")
+          (outcomes nil))
+      (latex-to-svg-backend doc :engine 'ratex :fallback 'latex
+                            :tentative t :quiet t
+                            :callback (lambda (o) (push o outcomes)))
+      (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
+      (latex-to-svg-backend-tests--fail-latex
+       (car l2s-test-processes) doc "Undefined control sequence." 1
+       "$\\nocommand")
+      (latex-to-svg-backend-tests--run-timers)
+      (should (= (length l2s-test-processes) 2))
+      (should (file-exists-p fmt))
+      (should (equal (mapcar (lambda (o) (plist-get o :engine)) outcomes)
+                     '(latex))))))
+
 (provide 'latex-to-svg-backend-tests)
 
 ;;; latex-to-svg-backend-tests.el ends here

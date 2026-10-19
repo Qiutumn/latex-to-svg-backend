@@ -185,18 +185,32 @@ A request can end before it returns, as when a program is not found,
 which fails as the compile starts.  `latex-to-svg-backend--call-back'
 then calls the callback from a timer.")
 
-(defun latex-to-svg-backend--waiter (callback &optional quiet fallback)
+(defun latex-to-svg-backend--waiter
+    (callback &optional quiet fallback tentative)
   "Return a waiter for CALLBACK, requested from the current buffer.
 A waiter is the plist (:callback CALLBACK :buffer BUFFER :quiet QUIET
-:fallback FALLBACK) queued in `latex-to-svg-backend--pending'.  CALLBACK
+:fallback FALLBACK :tentative TENTATIVE) queued in
+`latex-to-svg-backend--pending'.  CALLBACK
 is the caller's function of one argument, the outcome (see
 `latex-to-svg-backend--call-back').  BUFFER is the requesting buffer,
 which a failure is reported in.  QUIET non-nil reports no compile failure
 for this request.  FALLBACK is nil or a function of one argument, the
 waiter, that takes the request over to the fallback engine when the
-compile fails because of the formula."
+compile fails because of the formula.  TENTATIVE non-nil says a failure
+of this request is expected and says nothing about the `.fmt' file (see
+`latex-to-svg-backend--tentative-p')."
   (list :callback callback :buffer (current-buffer)
-        :quiet quiet :fallback fallback))
+        :quiet quiet :fallback fallback :tentative tentative))
+
+(defun latex-to-svg-backend--tentative-p (key)
+  "Return non-nil when every request waiting for KEY is tentative.
+KEY is a content key with waiters in `latex-to-svg-backend--pending'
+\(see `latex-to-svg-backend--waiter').  A failed compile of KEY is then
+not recorded, and one that loaded the `.fmt' file is not retried with
+the full preamble and does not blocklist the `.fmt' file: one request
+that is not tentative keeps all three."
+  (when-let* ((waiters (gethash key latex-to-svg-backend--pending)))
+    (seq-every-p (lambda (waiter) (plist-get waiter :tentative)) waiters)))
 
 ;;;; Error reporting
 
@@ -1287,7 +1301,9 @@ FAULT non-nil says the engine rejected the formula itself, so
 compiling it again would fail again.  It is the plist (:message MESSAGE
 :line LINE :column COLUMN) the engine read from its output (see
 `latex-to-svg-backend--failure').  The failure is recorded (see
-`latex-to-svg-backend--record-failure'), and each waiter with a
+`latex-to-svg-backend--record-failure'), unless every request waiting
+for KEY is tentative (see `latex-to-svg-backend--tentative-p'), and
+each waiter with a
 fallback (see `latex-to-svg-backend--waiter') is handed to it.  A
 missing program, a crash or a killed process is not the formula's
 fault, so it is not recorded and the next request compiles again.
@@ -1348,7 +1364,7 @@ echoing an unencodable Unicode character would otherwise make
                'setup engine
                :message (latex-to-svg-backend--setup-message engine exit)
                :key key)))))
-      (when fault
+      (when (and fault (not (latex-to-svg-backend--tentative-p key)))
         (latex-to-svg-backend--record-failure key outcome))
       (dolist (waiter (gethash key latex-to-svg-backend--pending))
         (let ((fallback (plist-get waiter :fallback))

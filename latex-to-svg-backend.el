@@ -385,7 +385,7 @@ differs from the others."
 
 ;;;; Public entry point
 
-(cl-defun latex-to-svg-backend (latex &key callback metadata engine fallback quiet rescale-by color background padding x-height)
+(cl-defun latex-to-svg-backend (latex &key callback metadata engine fallback quiet tentative rescale-by color background padding x-height)
   "Return an SVG image for LATEX, or nil while it compiles.
 
 ENGINE chooses the program that typesets LATEX.  `latex' (the
@@ -426,6 +426,19 @@ per buffer per engine and program; the request then returns nil, and
 the next request runs the program again.  An Emacs that cannot display
 SVG images also warns, once per buffer, even with QUIET.  A buffer
 killed before its compile ends gets no warning.
+
+TENTATIVE non-nil says a failure of this request is expected and says
+nothing about the precompiled preamble (see
+`latex-to-svg-backend-precompile'), as for an equation typeset at each
+pause while the user types it.  Its failure is not recorded, so a later
+request for LATEX compiles it again; CALLBACK still gets the failure.
+When a compile that loaded the `.fmt' file fails, the LaTeX and texres
+engines then do not compile LATEX again with the full preamble and keep
+using the `.fmt' file.  Without TENTATIVE such a compile stops using
+the `.fmt' file for the session and is run again with the full
+preamble, which catches a `.fmt' file that froze an old version of a
+file the preamble loads.  Requests for the same equation share one
+compile, which is tentative only when every one of them is.
 
 METADATA, when non-nil and `latex-to-svg-backend-metadata-prefix' is set, is the
 INITIAL value stored in this equation's `.eld' sidecar (see
@@ -576,6 +589,7 @@ Call within the target buffer: the engines read their options there (see
             (let ((image (latex-to-svg-backend
                           latex :callback callback :metadata metadata
                           :engine fallback :quiet quiet
+                          :tentative tentative
                           :rescale-by rescale-by :color color
                           :background background :padding padding
                           :x-height x-height)))
@@ -593,7 +607,8 @@ Call within the target buffer: the engines read their options there (see
                 (and fallback
                      (lambda (waiter)
                        (latex-to-svg-backend--fall-back
-                        latex fallback metadata waiter inputs))))
+                        latex fallback metadata waiter inputs)))
+                tentative)
                metadata engine inputs))
             nil))))))
 
