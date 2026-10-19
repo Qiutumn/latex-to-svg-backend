@@ -162,8 +162,7 @@ end.  A compile holds its place from its first process to its last:
 
 ;; At most `latex-to-svg-backend-jobs' compiles run at once (see
 ;; `latex-to-svg-backend--schedule').  A compile holds its slot until
-;; `latex-to-svg-backend--compile-done', across all its processes and the
-;; LaTeX engine's retry without a `.fmt' file.
+;; `latex-to-svg-backend--compile-done', across all its processes.
 (defvar latex-to-svg-backend--queue nil
   "Compiles waiting for a slot, oldest first, as (KEY START ENGINE) lists.
 START is a function of no arguments that starts the compile of KEY by
@@ -197,7 +196,7 @@ which a failure is reported in.  QUIET non-nil reports no compile failure
 for this request.  FALLBACK is nil or a function of one argument, the
 waiter, that takes the request over to the fallback engine when the
 compile fails because of the formula.  TENTATIVE non-nil says a failure
-of this request is expected and says nothing about the `.fmt' file (see
+of this request is expected and is not recorded (see
 `latex-to-svg-backend--tentative-p')."
   (list :callback callback :buffer (current-buffer)
         :quiet quiet :fallback fallback :tentative tentative))
@@ -206,9 +205,7 @@ of this request is expected and says nothing about the `.fmt' file (see
   "Return non-nil when every request waiting for KEY is tentative.
 KEY is a content key with waiters in `latex-to-svg-backend--pending'
 \(see `latex-to-svg-backend--waiter').  A failed compile of KEY is then
-not recorded, and one that loaded the `.fmt' file is not retried with
-the full preamble and does not blocklist the `.fmt' file: one request
-that is not tentative keeps all three."
+not recorded; one request that is not tentative has it recorded."
   (when-let* ((waiters (gethash key latex-to-svg-backend--pending)))
     (seq-every-p (lambda (waiter) (plist-get waiter :tentative)) waiters)))
 

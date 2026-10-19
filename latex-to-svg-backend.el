@@ -189,9 +189,9 @@ by which it is sized.")
 That is `latex-to-svg-backend--latex-inputs', which the texres engine
 reads too, and `latex-to-svg-backend--ratex-inputs' together.
 `latex-to-svg-backend' reads it once, in the requesting buffer, and
-passes it to the cache key, the compile, its retry and the fallback:
-the last two start from the process sentinel, where the current buffer
-is another."
+passes it to the cache key, the compile and the fallback: a compile may
+start from another compile's sentinel, and the fallback from its own,
+where the current buffer is another."
   (append (latex-to-svg-backend--latex-inputs)
           (latex-to-svg-backend--ratex-inputs)))
 
@@ -427,17 +427,10 @@ the next request runs the program again.  An Emacs that cannot display
 SVG images also warns, once per buffer, even with QUIET.  A buffer
 killed before its compile ends gets no warning.
 
-TENTATIVE non-nil says a failure of this request is expected and says
-nothing about the precompiled preamble (see
-`latex-to-svg-backend-precompile'), as for an equation typeset at each
-pause while the user types it.  Its failure is not recorded, so a later
-request for LATEX compiles it again; CALLBACK still gets the failure.
-When a compile that loaded the `.fmt' file fails, the LaTeX and texres
-engines then do not compile LATEX again with the full preamble and keep
-using the `.fmt' file.  Without TENTATIVE such a compile stops using
-the `.fmt' file for the session and is run again with the full
-preamble, which catches a `.fmt' file that froze an old version of a
-file the preamble loads.  Requests for the same equation share one
+TENTATIVE non-nil says a failure of this request is expected, as for an
+equation typeset at each pause while the user types it.  Its failure is
+not recorded, so a later request for LATEX compiles it again; CALLBACK
+still gets the failure.  Requests for the same equation share one
 compile, which is tentative only when every one of them is.
 
 METADATA, when non-nil and `latex-to-svg-backend-metadata-prefix' is set, is the

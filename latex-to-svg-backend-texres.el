@@ -233,7 +233,7 @@ does (see `latex-to-svg-backend--compile-failed')."
 METADATA and INPUTS are as for `latex-to-svg-backend--compile', which
 runs the compile with `latex-to-svg-backend--texres-toolchain'."
   (latex-to-svg-backend--compile
-   key latex metadata inputs nil (latex-to-svg-backend--texres-toolchain)))
+   key latex metadata inputs (latex-to-svg-backend--texres-toolchain)))
 
 (provide 'latex-to-svg-backend-texres)
 

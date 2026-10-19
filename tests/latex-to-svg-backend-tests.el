@@ -1038,85 +1038,6 @@ completion event."
                    "event=\"killed by signal 9\\n\"" nil t)))
         (should l2s-test-warnings)))))
 
-(ert-deftest latex-to-svg-backend-format-failure-retries-directly ()
-  ;; A failed .fmt attempt is cleaned up and retried once with the full
-  ;; preamble while keeping callbacks and metadata queued across attempts.
-  (latex-to-svg-backend-tests--with-fake-processes
-    (let* ((latex-to-svg-backend-precompile t)
-           (latex-to-svg-backend-metadata-prefix "L2S")
-           (doc "$retry$")
-           (key (latex-to-svg-backend--cache-key doc))
-           (fmt (latex-to-svg-backend--format-file "fake-format"))
-           (ensure-calls 0)
-           (callbacks 0)
-           metadata-seen)
-      (with-temp-file fmt
-        (insert "fake format"))
-      (puthash
-       key
-       (list (latex-to-svg-backend--waiter
-              (lambda (_outcome)
-                (cl-incf callbacks)
-                (setq metadata-seen (latex-to-svg-backend-metadata doc)))))
-       latex-to-svg-backend--pending)
-      (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
-                 (lambda (_preamble &optional _program)
-                   (cl-incf ensure-calls)
-                   fmt)))
-        ;; As `--fill-slots' does: the compile holds a slot.
-        (push key latex-to-svg-backend--running)
-        (latex-to-svg-backend--compile key doc 7)
-        (let* ((first-process (car l2s-test-processes))
-               (first-plist (aref first-process 3))
-               (first-buffer (plist-get first-plist :buffer))
-               (first-scratch (aref first-process 4))
-               (first-tex (latex-to-svg-backend-tests--tex-file first-process))
-               (first-source
-                (latex-to-svg-backend-tests--tex-source first-tex)))
-          (should (string-prefix-p "%& " first-source))
-          (latex-to-svg-backend-tests--finish-fake-process
-           first-process 1 "format compile failed\n")
-          (should (= ensure-calls 1))
-          (should (= (length l2s-test-processes) 2))
-          (should-not (file-exists-p fmt))
-          (should (gethash "fake-format"
-                           latex-to-svg-backend--format-blocklist))
-          (should (gethash key latex-to-svg-backend--pending))
-          ;; The retry keeps the slot.
-          (should (equal latex-to-svg-backend--running (list key)))
-          (should (= callbacks 0))
-          (should-not (file-directory-p first-scratch))
-          (should-not (buffer-live-p first-buffer))
-          (let* ((retry-process (car l2s-test-processes))
-                 (retry-plist (aref retry-process 3))
-                 (retry-buffer (plist-get retry-plist :buffer))
-                 (retry-scratch (aref retry-process 4))
-                 (retry-tex (latex-to-svg-backend-tests--tex-file retry-process))
-                 (retry-source
-                  (latex-to-svg-backend-tests--tex-source retry-tex))
-                 (dvi (expand-file-name "equation.dvi" retry-scratch))
-                 (tex-log (expand-file-name "equation.log" retry-scratch))
-                 (svg (expand-file-name "equation.svg" retry-scratch)))
-            (should-not (string-prefix-p "%& " retry-source))
-            (should (string-prefix-p
-                     (latex-to-svg-backend--preamble) retry-source))
-            (with-temp-file dvi
-              (insert "fake dvi"))
-            (with-temp-file tex-log
-              (insert "L2S 7\n"))
-            (latex-to-svg-backend-tests--finish-fake-process retry-process 0)
-            (should (= (length l2s-test-processes) 3))
-            (with-temp-file svg
-              (insert "<svg/>"))
-            (latex-to-svg-backend-tests--finish-fake-process
-             (car l2s-test-processes) 0)
-            (should (= callbacks 1))
-            (should (equal metadata-seen '(:nums (7 . 7))))
-            (should-not (gethash key latex-to-svg-backend--pending))
-            (should-not latex-to-svg-backend--running)
-            (should-not (file-directory-p retry-scratch))
-            (should-not (buffer-live-p retry-buffer))))))))
-
 (ert-deftest latex-to-svg-backend-runs-at-most-jobs-compiles ()
   ;; With two slots a third equation waits, and a second request for it
   ;; joins the queued compile.  When a compile ends, failed here, the
@@ -1597,9 +1518,9 @@ kept for symmetry with the compile pipeline."
                (fmt (latex-to-svg-backend--format-file fkey)))
           (with-temp-file fmt (insert "fmt"))
           (cl-letf (((symbol-function 'display-warning) #'ignore))
-            (latex-to-svg-backend--block-format fmt 'dump))
+            (latex-to-svg-backend--block-format fmt))
           (should-not (file-exists-p fmt))
-          (should (eq 'dump (gethash fkey latex-to-svg-backend--format-blocklist)))
+          (should (gethash fkey latex-to-svg-backend--format-blocklist))
           ;; Blocklisted => ensure-format yields nil without rebuilding.
           (cl-letf (((symbol-function 'latex-to-svg-backend--build-format)
                      (lambda (_k _preamble &optional _program) (error "must not dump a blocklisted .fmt file"))))
@@ -2387,27 +2308,22 @@ NEWEST is a function returning the most recently started fake process."
     (should (equal (car (plist-get (aref (car l2s-test-processes) 3) :command))
                    "latex-direct"))))
 
-(ert-deftest latex-to-svg-backend-missing-converter-keeps-format ()
-  ;; `dvisvgm' is not found after `latex' loaded a `.fmt' file: the
-  ;; missing program is reported, and the `.fmt' file is neither blocked
-  ;; nor retried without it, since that would fail the same way.
+(ert-deftest latex-to-svg-backend-missing-converter-is-reported ()
+  ;; `dvisvgm' is not found after `latex' ran: the missing program is
+  ;; reported, and nothing runs again.
   (latex-to-svg-backend-tests--with-public-api
     (setq l2s-test-missing '("dvisvgm-direct"))
-    (let ((blocked nil))
-      (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
-                 (lambda (&rest _) "/tmp/l2s-fake.fmt"))
-                ((symbol-function 'latex-to-svg-backend--block-format)
-                 (lambda (fmt) (push fmt blocked))))
-        (latex-to-svg-backend "$x$" :callback #'ignore)
-        (let ((latex (car l2s-test-processes)))
-          (with-temp-file (expand-file-name "equation.dvi" (aref latex 4))
-            (insert "fake dvi"))
-          (latex-to-svg-backend-tests--finish-fake-process latex 0))
-        (should-not blocked)
-        (should (= 1 (length l2s-test-processes)))
-        (should-not latex-to-svg-backend--running)
-        (should (string-match-p "could not run `dvisvgm-direct'"
-                                (nth 1 (car l2s-test-warnings))))))))
+    (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
+               (lambda (&rest _) "/tmp/l2s-fake.fmt")))
+      (latex-to-svg-backend "$x$" :callback #'ignore)
+      (let ((latex (car l2s-test-processes)))
+        (with-temp-file (expand-file-name "equation.dvi" (aref latex 4))
+          (insert "fake dvi"))
+        (latex-to-svg-backend-tests--finish-fake-process latex 0))
+      (should (= 1 (length l2s-test-processes)))
+      (should-not latex-to-svg-backend--running)
+      (should (string-match-p "could not run `dvisvgm-direct'"
+                              (nth 1 (car l2s-test-warnings)))))))
 
 (ert-deftest latex-to-svg-backend-missing-tex-program-not-blocklisted ()
   ;; A TeX program that is not found cannot dump the `.fmt' file: no
@@ -2856,7 +2772,7 @@ LATEX and OFFSET are as for `latex-to-svg-backend--latex-formula-error'."
         (dolist (toolchain (list nil
                                  (append '(:prefix "\\relax\n\\relax\n")
                                          (latex-to-svg-backend--latex-toolchain))))
-          (latex-to-svg-backend--compile key doc nil nil nil toolchain)
+          (latex-to-svg-backend--compile key doc nil nil toolchain)
           (let* ((process (car l2s-test-processes))
                  (tex (latex-to-svg-backend-tests--tex-file process))
                  (lines (split-string (latex-to-svg-backend-tests--tex-source tex)
@@ -3263,9 +3179,7 @@ and one in a formula's own black.")
 
 (ert-deftest latex-to-svg-backend-compile-writes-the-not-precompiled-text ()
   ;; The not-precompiled text goes before `\begin{document}': after the `%&' line
-  ;; with a `.fmt' file, after the preamble without.  The retry after a
-  ;; failed `.fmt' file runs from the sentinel, in another buffer, and
-  ;; still writes the requesting buffer's text.
+  ;; with a `.fmt' file, after the preamble without.
   (latex-to-svg-backend-tests--with-fake-processes
     (latex-to-svg-backend-tests--outside-a-project
       (setq-local latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}")
@@ -3292,9 +3206,11 @@ and one in a formula's own black.")
                                  latex-to-svg-backend--latex-baseline-mark
                                  latex-to-svg-backend--latex-x-height-mark
                                  "\\end{document}\n")))
-          (with-temp-buffer
-            (latex-to-svg-backend-tests--finish-fake-process
-             (car l2s-test-processes) 1 "format compile failed\n"))
+          (latex-to-svg-backend-tests--finish-fake-process
+           (car l2s-test-processes) 0))
+        (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
+                   #'ignore))
+          (latex-to-svg-backend--compile key doc)
           (should (= 2 (length l2s-test-processes)))
           (should (equal (funcall source)
                          (concat (latex-to-svg-backend--preamble) "\n"
@@ -3408,45 +3324,32 @@ and one in a formula's own black.")
         (let ((default-directory "/tmp/b/"))
           (should (equal global (latex-to-svg-backend--preamble))))))))
 
-(ert-deftest latex-to-svg-backend-dump-and-retry-use-the-requesting-buffer ()
-  ;; The dump and the retry after a failed `.fmt' file write the requesting
-  ;; buffer's preamble, also when they run in another buffer: the dump
-  ;; from the preamble it is given, the retry from the sentinel.
-  (latex-to-svg-backend-tests--with-fake-processes
-    (latex-to-svg-backend-tests--outside-a-project
+(ert-deftest latex-to-svg-backend-dump-uses-the-requesting-buffer ()
+  ;; The dump writes the requesting buffer's preamble, also when it runs
+  ;; in another buffer: it dumps the preamble it is given.
+  (latex-to-svg-backend-tests--outside-a-project
+    (with-temp-buffer
       (setq-local latex-to-svg-backend-appended-preamble "\\usepackage{physics}")
       (setq default-directory "/tmp/paper/")
-      (let* ((doc "$\\dv{f}{x}$")
-             (preamble (latex-to-svg-backend--preamble))
-             (key (latex-to-svg-backend--cache-key doc))
-             (fmt (latex-to-svg-backend--format-file "fake-format"))
-             dumped)
-        (should (string-search "physics" preamble))
-        (cl-letf (((symbol-function 'call-process)
-                   (lambda (&rest args)
-                     (setq dumped (latex-to-svg-backend-tests--tex-source
-                                   (car (last args))))
-                     1))
-                  ((symbol-function 'display-warning) #'ignore))
-          (with-temp-buffer
-            (let ((latex-to-svg-backend-precompile t))
-              (latex-to-svg-backend--ensure-format preamble)))
-          (should (equal dumped (concat preamble "\n\\dump\n"))))
-        (with-temp-file fmt (insert "fake format"))
-        (puthash key (list (latex-to-svg-backend--waiter #'ignore))
-                 latex-to-svg-backend--pending)
-        (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
-                   (lambda (_preamble &optional _program) fmt))
-                  ((symbol-function 'display-warning) #'ignore))
-          (latex-to-svg-backend--compile key doc)
-          (with-temp-buffer
-            (latex-to-svg-backend-tests--finish-fake-process
-             (car l2s-test-processes) 1 "format compile failed\n"))
-          (should (string-prefix-p
-                   (concat preamble "\n\\begin{document}")
-                   (latex-to-svg-backend-tests--tex-source
-                    (latex-to-svg-backend-tests--tex-file
-                     (car l2s-test-processes))))))))))
+      (let ((preamble (latex-to-svg-backend--preamble))
+            (latex-to-svg-backend-cache-directory (make-temp-file "l2s-dump" t))
+            (latex-to-svg-backend--format-checked (make-hash-table :test 'equal))
+            (latex-to-svg-backend--format-blocklist (make-hash-table :test 'equal))
+            dumped)
+        (unwind-protect
+            (progn
+              (should (string-search "physics" preamble))
+              (cl-letf (((symbol-function 'call-process)
+                         (lambda (&rest args)
+                           (setq dumped (latex-to-svg-backend-tests--tex-source
+                                         (car (last args))))
+                           1))
+                        ((symbol-function 'display-warning) #'ignore))
+                (with-temp-buffer
+                  (let ((latex-to-svg-backend-precompile t))
+                    (latex-to-svg-backend--ensure-format preamble)))
+                (should (equal dumped (concat preamble "\n\\dump\n")))))
+          (delete-directory latex-to-svg-backend-cache-directory t))))))
 
 (ert-deftest latex-to-svg-backend-fallback-to-ratex-uses-the-requesting-buffer ()
   ;; A LaTeX-to-RaTeX fallback starts from the sentinel, in another buffer,
@@ -3674,7 +3577,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
            (stamp (latex-to-svg-backend--format-stamp-file fmt))
            (other (latex-to-svg-backend--format-file "other")))
       (cl-letf (((symbol-function 'display-warning) #'ignore))
-        (latex-to-svg-backend--block-format fmt 'load))
+        (latex-to-svg-backend--block-format fmt))
       (should-not (file-exists-p stamp))
       (with-temp-file other (insert "fmt"))
       (latex-to-svg-backend--write-format-stamp other binary)
@@ -3838,15 +3741,14 @@ The binary is bound to `binary'; the dump is stubbed to write the
                   (lambda (_preamble &optional _program) fmt)))
          ,@body))))
 
-(ert-deftest latex-to-svg-backend-tentative-failure-keeps-the-format ()
-  ;; A tentative compile that loaded the `.fmt' file and failed is not
-  ;; run again, keeps the `.fmt' file, and records nothing: the callback
-  ;; gets the failure, and a later request compiles again.
+(ert-deftest latex-to-svg-backend-failure-with-a-format-keeps-the-format ()
+  ;; A compile that loaded the `.fmt' file and failed is not run again:
+  ;; the failure is recorded, and the next compile loads the `.fmt' file.
   (latex-to-svg-backend-tests--with-fmt
     (let* ((doc "$\\nocommand$")
            (key (latex-to-svg-backend--cache-key doc))
            (outcomes nil))
-      (latex-to-svg-backend doc :tentative t :quiet t
+      (latex-to-svg-backend doc :quiet t
                             :callback (lambda (o) (push o outcomes)))
       (latex-to-svg-backend-tests--fail-latex
        (car l2s-test-processes) doc "Undefined control sequence." 1
@@ -3859,6 +3761,28 @@ The binary is bound to `binary'; the dump is stubbed to write the
       (should-not latex-to-svg-backend--running)
       (should (equal (mapcar (lambda (o) (plist-get o :kind)) outcomes)
                      '(formula)))
+      (should (file-exists-p (latex-to-svg-backend--meta-file key)))
+      (latex-to-svg-backend "$y$" :callback #'ignore)
+      (should (string-prefix-p
+               "%& " (latex-to-svg-backend-tests--tex-source
+                      (latex-to-svg-backend-tests--tex-file
+                       (car l2s-test-processes))))))))
+
+(ert-deftest latex-to-svg-backend-tentative-failure-is-not-recorded ()
+  ;; The callback gets the failure, and a later request compiles again.
+  (latex-to-svg-backend-tests--with-fmt
+    (let* ((doc "$\\nocommand$")
+           (key (latex-to-svg-backend--cache-key doc))
+           (outcomes nil))
+      (latex-to-svg-backend doc :tentative t :quiet t
+                            :callback (lambda (o) (push o outcomes)))
+      (latex-to-svg-backend-tests--fail-latex
+       (car l2s-test-processes) doc "Undefined control sequence." 1
+       "$\\nocommand")
+      (latex-to-svg-backend-tests--run-timers)
+      (should-not l2s-test-warnings)
+      (should (equal (mapcar (lambda (o) (plist-get o :kind)) outcomes)
+                     '(formula)))
       (should (equal (plist-get (car outcomes) :message)
                      "Undefined control sequence."))
       (should-not (file-exists-p (latex-to-svg-backend--meta-file key)))
@@ -3867,7 +3791,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
 
 (ert-deftest latex-to-svg-backend-tentative-merged-with-a-normal-request ()
   ;; A compile is tentative only when every request is: with a normal one
-  ;; waiting too, the `.fmt' file is blocked and the equation retried.
+  ;; waiting too, the failure is recorded.
   (latex-to-svg-backend-tests--with-fmt
     (let ((doc "$\\nocommand$"))
       (latex-to-svg-backend doc :tentative t :quiet t :callback #'ignore)
@@ -3876,10 +3800,9 @@ The binary is bound to `binary'; the dump is stubbed to write the
       (latex-to-svg-backend-tests--fail-latex
        (car l2s-test-processes) doc "Undefined control sequence." 1
        "$\\nocommand")
-      (should (= (length l2s-test-processes) 2))
-      (should-not (file-exists-p fmt))
-      (should (gethash "fake-format" latex-to-svg-backend--format-blocklist))
-      (latex-to-svg-backend-tests--run-timers))))
+      (latex-to-svg-backend-tests--run-timers)
+      (should (file-exists-p (latex-to-svg-backend--meta-file
+                              (latex-to-svg-backend--cache-key doc)))))))
 
 (ert-deftest latex-to-svg-backend-tentative-failure-is-never-recorded ()
   ;; Without a `.fmt' file, and with RaTeX, a tentative failure is not
@@ -3903,8 +3826,8 @@ The binary is bound to `binary'; the dump is stubbed to write the
       (should (= (length l2s-test-processes) 4)))))
 
 (ert-deftest latex-to-svg-backend-tentative-stays-tentative-in-the-fallback ()
-  ;; RaTeX rejects the formula; the LaTeX fallback loads the `.fmt' file
-  ;; and fails too: the request is still tentative there.
+  ;; RaTeX rejects the formula; the LaTeX fallback fails too: the
+  ;; request is still tentative there, so neither failure is recorded.
   (latex-to-svg-backend-tests--with-fmt
     (let ((doc "$\\nocommand$")
           (outcomes nil))
@@ -3917,7 +3840,8 @@ The binary is bound to `binary'; the dump is stubbed to write the
        "$\\nocommand")
       (latex-to-svg-backend-tests--run-timers)
       (should (= (length l2s-test-processes) 2))
-      (should (file-exists-p fmt))
+      (should-not (file-exists-p (latex-to-svg-backend--meta-file
+                                  (latex-to-svg-backend--cache-key doc))))
       (should (equal (mapcar (lambda (o) (plist-get o :engine)) outcomes)
                      '(latex))))))
 

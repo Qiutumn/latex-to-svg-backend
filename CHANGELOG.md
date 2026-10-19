@@ -17,19 +17,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory deleted, and its slot goes to the next compile. A stopped
   compile records no failure.
 - `:tentative` keyword of `latex-to-svg-backend`, for a request whose
-  failure is expected and says nothing about the `.fmt` file, such as
-  an equation typeset at each pause while the user types it. When a
-  compile that loaded the `.fmt` file fails, a request without it
-  stops using the `.fmt` file for the session and compiles the
-  equation again with the full preamble, so the first half-typed
-  formula made every later compile slower. A tentative compile keeps
-  the `.fmt` file and is not compiled again; the callback still gets
-  the failure. A tentative failure is not recorded, with any engine,
-  so a later request for the same equation compiles it again. Requests for the same equation share one compile,
-  which is tentative only when every one of them is.
+  failure is expected, such as an equation typeset at each pause while
+  the user types it. A tentative failure is not recorded, so a later
+  request for the same equation compiles it again; the callback still
+  gets the failure. Requests for the same equation share one compile,
+  whose failure is recorded unless every one of them is tentative.
 
 ### Changed
 
+- A compile that loaded the `.fmt` file and failed is handled as any
+  other failed compile, and the `.fmt` file stays in use. Before, the
+  `.fmt` file was deleted, precompilation was turned off for the
+  session, and the equation was compiled again with the full preamble,
+  to catch a `.fmt` file that froze an old version of a file the
+  preamble loads. A formula error fails with any preamble, so the first
+  typo in a document made every later compile in the session slower.
+  After editing a file the preamble loads, `M-x
+  latex-to-svg-backend-invalidate-format` dumps the `.fmt` file again.
 - Each compile runs in a scratch directory under `tmp/` in the cache
   directory, instead of `temporary-file-directory`, and moves its SVG
   into `svg/` with a rename. The cache key and the SVG are unchanged.
