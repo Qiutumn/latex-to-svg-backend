@@ -33,7 +33,7 @@ jobs:
     # it is here as early warning, not as a gate.
     continue-on-error: ${{ matrix.emacs_version == 'snapshot' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: purcell/setup-emacs@master
         with:
@@ -94,7 +94,7 @@ jobs:
     # default preamble needs: standalone + varwidth (latex-extra), xcolor
     # (latex-recommended), amssymb's fonts (fonts-recommended).  `render-svg' comes from a RaTeX release.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Emacs and the TeX toolchain
         run: |
