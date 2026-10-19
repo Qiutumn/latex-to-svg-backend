@@ -1447,7 +1447,7 @@ kept for symmetry with the compile pipeline."
   ;; With precompilation off, no `.fmt' file is dumped or consulted.
   (let ((latex-to-svg-backend-precompile nil))
     (cl-letf (((symbol-function 'latex-to-svg-backend--build-format)
-               (lambda (_k _preamble &optional _program) (error "must not dump when disabled"))))
+               (lambda (_k _preamble &optional _program _package-files) (error "must not dump when disabled"))))
       (should-not (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble))))))
 
 (ert-deftest latex-to-svg-backend-ensure-format-builds-once-and-reuses ()
@@ -1465,7 +1465,7 @@ kept for symmetry with the compile pipeline."
         (cl-letf (((symbol-function 'latex-to-svg-backend--latex-binary)
                    (lambda (&optional _program) binary))
                   ((symbol-function 'latex-to-svg-backend--build-format)
-                   (lambda (fkey _preamble &optional _program)
+                   (lambda (fkey _preamble &optional _program _package-files)
                      (cl-incf builds)
                      (let ((f (latex-to-svg-backend--format-file fkey)))
                        (with-temp-file f (insert "fmt"))
@@ -1499,7 +1499,7 @@ kept for symmetry with the compile pipeline."
           (cl-letf (((symbol-function 'latex-to-svg-backend--latex-binary)
                      (lambda (&optional _program) newer-bin))
                     ((symbol-function 'latex-to-svg-backend--build-format)
-                     (lambda (k _preamble &optional _program)
+                     (lambda (k _preamble &optional _program _package-files)
                        (cl-incf builds)
                        (let ((f (latex-to-svg-backend--format-file k)))
                          (with-temp-file f (insert "new")) f))))
@@ -1527,7 +1527,7 @@ kept for symmetry with the compile pipeline."
           (should (gethash fkey latex-to-svg-backend--format-blocklist))
           ;; Blocklisted => ensure-format yields nil without rebuilding.
           (cl-letf (((symbol-function 'latex-to-svg-backend--build-format)
-                     (lambda (_k _preamble &optional _program) (error "must not dump a blocklisted .fmt file"))))
+                     (lambda (_k _preamble &optional _program _package-files) (error "must not dump a blocklisted .fmt file"))))
             (should-not (latex-to-svg-backend--ensure-format (latex-to-svg-backend--preamble)))))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
@@ -1741,6 +1741,18 @@ Return the SVG path."
                latex-to-svg-backend-pdftocairo-program))
     (should (get v 'custom-type))
     (should-not (get v 'safe-local-variable))))
+
+(ert-deftest latex-to-svg-backend-preamble-file-lists-are-safe ()
+  ;; The two file lists are inert: only their files' modification times
+  ;; are read.  The predicate admits a list of strings only.
+  (dolist (v '(latex-to-svg-backend-preamble-package-files
+               latex-to-svg-backend-preamble-macro-files))
+    (let ((safe (get v 'safe-local-variable)))
+      (should safe)
+      (should (funcall safe nil))
+      (should (funcall safe '("macros.tex" "/abs/x.sty")))
+      (should-not (funcall safe "macros.tex"))
+      (should-not (funcall safe '(macros))))))
 
 (ert-deftest latex-to-svg-backend-line-width-safe-rejects-latex-code ()
   ;; `-line-width' IS safe, but only because its predicate admits nothing but
@@ -3200,7 +3212,7 @@ and one in a formula's own black.")
         (puthash key (list (latex-to-svg-backend--waiter #'ignore))
                  latex-to-svg-backend--pending)
         (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
-                   (lambda (_preamble &optional _program) fmt))
+                   (lambda (_preamble &optional _program _package-files) fmt))
                   ((symbol-function 'display-warning) #'ignore))
           (latex-to-svg-backend--compile key doc)
           (should (equal (funcall source)
@@ -3301,6 +3313,102 @@ and one in a formula's own black.")
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 ;;;; Buffer-local options
+
+(ert-deftest latex-to-svg-backend-preamble-files-fold-into-the-key ()
+  ;; A listed file's modification time is in the key, so an edit of it
+  ;; compiles the equation again; nothing listed leaves the key as it was.
+  ;; A name is relative to the directory `\input' searches.
+  (latex-to-svg-backend-tests--outside-a-project
+    (with-temp-buffer
+      (let* ((dir (file-name-as-directory (make-temp-file "l2s-files" t)))
+             (macros (expand-file-name "macros.tex" dir))
+             (sty (expand-file-name "mine.sty" dir))
+             (key (lambda ()
+                    (latex-to-svg-backend--cache-key
+                     "$x$" 'latex (latex-to-svg-backend--inputs)))))
+        (unwind-protect
+            (progn
+              (setq default-directory dir)
+              (with-temp-file macros (insert "\\def\\a{a}"))
+              (with-temp-file sty (insert "\\def\\b{b}"))
+              (set-file-times macros '(1 0))
+              (set-file-times sty '(1 0))
+              (let ((bare (funcall key)))
+                (setq-local latex-to-svg-backend-preamble-macro-files
+                            '("macros.tex"))
+                (let ((files (plist-get (latex-to-svg-backend--inputs)
+                                        :macro-files)))
+                  (should (equal (mapcar #'car files) (list macros)))
+                  (should (time-equal-p (cdar files) '(1 0))))
+                (let ((listed (funcall key)))
+                  (should-not (equal bare listed))
+                  (set-file-times macros '(2 0))
+                  (should-not (equal listed (funcall key))))
+                (let ((before (funcall key)))
+                  (setq-local latex-to-svg-backend-preamble-package-files
+                              (list sty))
+                  (should-not (equal before (funcall key))))
+                (kill-local-variable 'latex-to-svg-backend-preamble-macro-files)
+                (kill-local-variable 'latex-to-svg-backend-preamble-package-files)
+                (should (equal bare (funcall key)))))
+          (delete-directory dir t))))))
+
+(ert-deftest latex-to-svg-backend-missing-preamble-file-warns-once ()
+  ;; A listed file that does not exist is warned about once per buffer,
+  ;; and stamped with no modification time.
+  (latex-to-svg-backend-tests--outside-a-project
+    (with-temp-buffer
+      (let ((default-directory "/tmp/l2s-no-such-project/")
+            (warnings nil))
+        (setq-local latex-to-svg-backend-preamble-macro-files '("macros.tex"))
+        (cl-letf (((symbol-function 'display-warning)
+                   (lambda (&rest w) (push w warnings))))
+          (dotimes (_ 2)
+            (should (equal (plist-get (latex-to-svg-backend--inputs)
+                                      :macro-files)
+                           '(("/tmp/l2s-no-such-project/macros.tex"))))))
+        (should (= 1 (length warnings)))
+        (should (string-match-p "latex-to-svg-backend-preamble-macro-files"
+                                (nth 1 (car warnings))))))))
+
+(ert-deftest latex-to-svg-backend-package-files-make-the-format-stale ()
+  ;; The stamp records the package files: an edit of one, or another
+  ;; list, makes the `.fmt' file stale.  Macro files are not in it.
+  (let* ((binary (make-temp-file "l2s-bin"))
+         (sty (make-temp-file "l2s-sty"))
+         (files (list (latex-to-svg-backend--preamble-file-stamp sty)))
+         (stamp (latex-to-svg-backend--format-stamp binary nil files)))
+    (unwind-protect
+        (progn
+          (should (equal (plist-get stamp :preamble-package-files) files))
+          (should (latex-to-svg-backend--format-fresh-p stamp binary files))
+          (should-not (latex-to-svg-backend--format-fresh-p stamp binary))
+          (set-file-times sty '(5 0))
+          (should-not (latex-to-svg-backend--format-fresh-p
+                       stamp binary
+                       (list (latex-to-svg-backend--preamble-file-stamp sty))))
+          (let ((none (latex-to-svg-backend--format-stamp binary)))
+            (should-not (plist-member none :preamble-package-files))
+            (should (latex-to-svg-backend--format-fresh-p none binary))))
+      (delete-file binary)
+      (delete-file sty))))
+
+(ert-deftest latex-to-svg-backend-compile-checks-the-package-files ()
+  ;; The compile hands the request's package files to the `.fmt' check,
+  ;; and not its macro files.
+  (latex-to-svg-backend-tests--with-fake-processes
+    (latex-to-svg-backend-tests--outside-a-project
+      (let (seen)
+        (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
+                   (lambda (_preamble &optional _program package-files)
+                     (setq seen package-files)
+                     nil)))
+          (latex-to-svg-backend--compile
+           (latex-to-svg-backend--cache-key "$x$") "$x$" nil
+           (list :preamble (latex-to-svg-backend--preamble) :macros ""
+                 :package-files '(("/p/mine.sty" 1 . 1))
+                 :macro-files '(("/p/macros.tex" 2 . 1))))
+          (should (equal seen '(("/p/mine.sty" 1 . 1)))))))))
 
 (ert-deftest latex-to-svg-backend-old-preamble-names-still-work ()
   ;; The names before 0.16.0 are obsolete aliases: a `.dir-locals.el'
@@ -3408,7 +3516,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
          (cl-letf (((symbol-function 'latex-to-svg-backend--latex-binary)
                     (lambda (&optional _program) binary))
                    ((symbol-function 'latex-to-svg-backend--build-format)
-                    (lambda (fkey _preamble &optional _program)
+                    (lambda (fkey _preamble &optional _program _package-files)
                       (cl-incf builds)
                       (let ((f (latex-to-svg-backend--format-file fkey)))
                         (with-temp-file f (insert "fmt"))
@@ -3730,7 +3838,7 @@ OUTPUT dump.fmt\n" root base sty outside)))
            (cancelled (lambda (_outcome) (error "Cancelled callback called"))))
       (with-temp-file fmt (insert "fake format"))
       (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
-                 (lambda (_preamble &optional _program) fmt)))
+                 (lambda (_preamble &optional _program _package-files) fmt)))
         (latex-to-svg-backend "$a$" :callback cancelled)
         (latex-to-svg-backend "$b$" :callback #'ignore)
         (let* ((process (car l2s-test-processes))
@@ -3820,7 +3928,7 @@ OUTPUT dump.fmt\n" root base sty outside)))
      (let ((fmt (latex-to-svg-backend--format-file "fake-format")))
        (with-temp-file fmt (insert "fake format"))
        (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
-                  (lambda (_preamble &optional _program) fmt)))
+                  (lambda (_preamble &optional _program _package-files) fmt)))
          ,@body))))
 
 (ert-deftest latex-to-svg-backend-failure-with-a-format-keeps-the-format ()

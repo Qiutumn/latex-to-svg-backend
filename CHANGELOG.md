@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   request for the same equation compiles it again; the callback still
   gets the failure. Requests for the same equation share one compile,
   whose failure is recorded unless every one of them is tentative.
+- `latex-to-svg-backend-preamble-package-files` and
+  `latex-to-svg-backend-preamble-macro-files`: the files
+  `latex-to-svg-backend-preamble-packages` and
+  `latex-to-svg-backend-preamble-macros` load, such as a `.sty` or
+  `macros.tex`, relative to the project root or absolute. The
+  modification time of each is in the cache key, so an edit of one
+  compiles the equations again; a package file's is also in the stamp
+  of the `.fmt` file, so the next compile dumps it again. A listed file
+  that does not exist is warned about once per buffer. Both are
+  `:safe`.
 
 ### Changed
 
