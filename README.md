@@ -502,12 +502,40 @@ A failure caused by the formula is recorded, and the equation is not compiled
 again (see [Failed compiles](#failed-compiles-and-the-fallback-engine)).
 Anything that changes the cache key retries on its own: editing the equation,
 `latex-to-svg-backend-preamble`, `latex-to-svg-backend-preamble-packages`,
-`latex-to-svg-backend-preamble-macros`, `latex-to-svg-backend-line-width`, or `latex-to-svg-backend-ratex-macros`. Two
-fixes do not change the key: installing a missing TeX package (a `\usepackage`
-for a `.sty` your TeX installation lacks makes every equation fail) and
-upgrading RaTeX. After those, regenerate the equations in the front-end
-(`C-u C-u C-c C-x C-l` in `latex-to-svg`), which calls
-`latex-to-svg-backend-invalidate`, or call it yourself.
+`latex-to-svg-backend-preamble-macros`, `latex-to-svg-backend-line-width`,
+`latex-to-svg-backend-ratex-macros`, or a file listed in
+`latex-to-svg-backend-preamble-package-files` or
+`latex-to-svg-backend-preamble-macro-files`. Two fixes do not change the key:
+installing a missing TeX package (a `\usepackage` for a `.sty` your TeX
+installation lacks makes every equation fail) and upgrading RaTeX. After
+those, regenerate the equations in the front-end (`C-u C-u C-c C-x C-l` in
+`latex-to-svg`), which calls `latex-to-svg-backend-invalidate`, or call it
+yourself.
+
+### Stale equations
+
+An equation can show an old picture after something it depends on changed.
+Which fix applies depends on what changed:
+
+- **A file your preamble loads**, such as `macros.tex`. List it in
+  `latex-to-svg-backend-preamble-macro-files`, or in
+  `latex-to-svg-backend-preamble-package-files` when
+  `latex-to-svg-backend-preamble-packages` loads it (see [A project's
+  preamble](#a-projects-preamble)). Then an edit compiles the equations again
+  on its own, and `M-x latex-to-svg-frontend-refresh` updates the equations
+  already shown. A file that is not listed is not followed: after editing it,
+  run `C-u M-x latex-to-svg-frontend-refresh`, which also dumps the `.fmt`
+  file again.
+- **Your TeX installation**, after a `tlmgr update`, an upgrade to a new TeX
+  Live year, or an update from your Linux package manager. The backend
+  notices it at the next compile and dumps the `.fmt` file again, so new
+  equations use the updated packages. Equations already compiled keep their
+  pictures: a package update rarely changes how an equation looks, and
+  compiling every equation again after each update would cost more than it
+  fixes. To compile them again, regenerate them (`C-u C-u C-c C-x C-l` in
+  `latex-to-svg`). On MiKTeX, which has no `ls-R` index, an update of a
+  package is not noticed; `M-x latex-to-svg-backend-flush-format` dumps the
+  `.fmt` files again.
 
 ## Tests
 
