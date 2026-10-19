@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `latex-to-svg-backend-appended-preamble` is renamed
+  `latex-to-svg-backend-preamble-packages`, and
+  `latex-to-svg-backend-preamble-not-precompiled` is renamed
+  `latex-to-svg-backend-preamble-macros`. Both are appended to the
+  preamble, and each name now says what to put in it: packages, which
+  rarely change and are dumped into the `.fmt` file, or a few macros of
+  your own that you change often, which are read at every compile. The
+  old names are obsolete aliases and still work, also from a
+  `.dir-locals.el`.
 - A compile that loaded the `.fmt` file and failed is handled as any
   other failed compile, and the `.fmt` file stays in use. Before, the
   `.fmt` file was deleted, precompilation was turned off for the

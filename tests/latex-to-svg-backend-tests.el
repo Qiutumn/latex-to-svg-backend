@@ -50,10 +50,10 @@
     (let ((latex-to-svg-backend-preamble "\\documentclass{minimal}"))
       (should-not (equal base (latex-to-svg-backend--cache-key "E=mc^2"))))))
 
-(ert-deftest latex-to-svg-backend-cache-key-folds-in-appended-preamble ()
-  ;; Changing the appended preamble must also invalidate the cache.
+(ert-deftest latex-to-svg-backend-cache-key-folds-in-preamble-packages ()
+  ;; Changing the preamble packages must also invalidate the cache.
   (let ((base (latex-to-svg-backend--cache-key "E=mc^2")))
-    (let ((latex-to-svg-backend-appended-preamble "\\usepackage{braket}"))
+    (let ((latex-to-svg-backend-preamble-packages "\\usepackage{braket}"))
       (should-not (equal base (latex-to-svg-backend--cache-key "E=mc^2"))))))
 
 (ert-deftest latex-to-svg-backend-cache-key-folds-in-line-width ()
@@ -1413,7 +1413,7 @@ kept for symmetry with the compile pipeline."
   ;; reused after a preamble edit.
   (let ((base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble))))
     (should (equal base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble))))
-    (let ((latex-to-svg-backend-appended-preamble "\\usepackage{physics}"))
+    (let ((latex-to-svg-backend-preamble-packages "\\usepackage{physics}"))
       (should-not (equal base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble)))))
     (let ((latex-to-svg-backend-preamble "\\documentclass{minimal}"))
       (should-not (equal base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble)))))
@@ -1424,21 +1424,21 @@ kept for symmetry with the compile pipeline."
   ;; The combined preamble is the base alone when nothing is appended, else
   ;; base + newline + appended (the exact text dumped and embedded).
   (let ((latex-to-svg-backend-preamble "BASE")
-        (latex-to-svg-backend-appended-preamble ""))
+        (latex-to-svg-backend-preamble-packages ""))
     (should (equal (latex-to-svg-backend--preamble) "BASE")))
   (let ((latex-to-svg-backend-preamble "BASE")
-        (latex-to-svg-backend-appended-preamble "EXTRA"))
+        (latex-to-svg-backend-preamble-packages "EXTRA"))
     (should (equal (latex-to-svg-backend--preamble) "BASE\nEXTRA"))))
 
 (ert-deftest latex-to-svg-backend-preamble-appends-line-width ()
   ;; A non-nil `latex-to-svg-backend-line-width' appends a `\sa@width'
   ;; override (last, so it wins over the class default); nil appends nothing.
   (let ((latex-to-svg-backend-preamble "BASE")
-        (latex-to-svg-backend-appended-preamble "")
+        (latex-to-svg-backend-preamble-packages "")
         (latex-to-svg-backend-line-width nil))
     (should (equal (latex-to-svg-backend--preamble) "BASE")))
   (let ((latex-to-svg-backend-preamble "BASE")
-        (latex-to-svg-backend-appended-preamble "EXTRA")
+        (latex-to-svg-backend-preamble-packages "EXTRA")
         (latex-to-svg-backend-line-width "18cm"))
     (should (equal (latex-to-svg-backend--preamble)
                    "BASE\nEXTRA\n\\makeatletter\\def\\sa@width{18cm}\\makeatother"))))
@@ -1732,8 +1732,8 @@ Return the SVG path."
   (dolist (v '(latex-to-svg-backend-latex-program
                latex-to-svg-backend-dvisvgm-program
                latex-to-svg-backend-preamble
-               latex-to-svg-backend-appended-preamble
-               latex-to-svg-backend-preamble-not-precompiled
+               latex-to-svg-backend-preamble-packages
+               latex-to-svg-backend-preamble-macros
                latex-to-svg-backend-cache-directory
                latex-to-svg-backend-ratex-program
                latex-to-svg-backend-ratex-macros
@@ -2762,11 +2762,11 @@ LATEX and OFFSET are as for `latex-to-svg-backend--latex-formula-error'."
 
 (ert-deftest latex-to-svg-backend-compile-counts-lines-before-the-equation ()
   ;; `--compile' gives the parser the number of lines before LATEX in
-  ;; `equation.tex', with the full preamble, the not-precompiled text and a
+  ;; `equation.tex', with the full preamble, the macros text and a
   ;; toolchain prefix; `latex' runs with the environment that prints the
   ;; whole line, and `dvisvgm' without it.
   (latex-to-svg-backend-tests--with-fake-processes
-    (let* ((latex-to-svg-backend-preamble-not-precompiled "\\def\\a{a}\n\\def\\b{b}")
+    (let* ((latex-to-svg-backend-preamble-macros "\\def\\a{a}\n\\def\\b{b}")
            (doc "$x +\n\\undefined$")
            (key (latex-to-svg-backend--cache-key doc))
            (faults nil))
@@ -2834,7 +2834,7 @@ and one in a formula's own black.")
     (should-not (equal (latex-to-svg-backend--cache-key doc 'texres)
                        (latex-to-svg-backend--cache-key doc 'ratex)))
     (let ((base (latex-to-svg-backend--cache-key doc 'texres))
-          (latex-to-svg-backend-appended-preamble "\\usepackage{braket}"))
+          (latex-to-svg-backend-preamble-packages "\\usepackage{braket}"))
       (should-not (equal base (latex-to-svg-backend--cache-key doc 'texres))))
     (should (eq (latex-to-svg-backend--engine 'texres) 'texres))))
 
@@ -3109,33 +3109,33 @@ and one in a formula's own black.")
   `(cl-letf (((symbol-function 'project-current) #'ignore))
      ,@body))
 
-(ert-deftest latex-to-svg-backend-empty-not-precompiled-leaves-the-key ()
+(ert-deftest latex-to-svg-backend-empty-macros-leave-the-key ()
   ;; The option's default adds nothing, so every user's cache keeps its
   ;; keys, and the directory is not even looked up.
-  (let ((latex-to-svg-backend-preamble-not-precompiled ""))
+  (let ((latex-to-svg-backend-preamble-macros ""))
     (cl-letf (((symbol-function 'project-current)
                (lambda (&rest _) (error "must not look for a project"))))
-      (should (equal (latex-to-svg-backend--not-precompiled) ""))
+      (should (equal (latex-to-svg-backend--macros) ""))
       (should (equal (latex-to-svg-backend--latex-cache-salt (latex-to-svg-backend--latex-inputs))
                      (latex-to-svg-backend--preamble))))))
 
-(ert-deftest latex-to-svg-backend-not-precompiled-searches-the-project ()
+(ert-deftest latex-to-svg-backend-macros-search-the-project ()
   ;; `\input' searches the project root, else `default-directory'; the
   ;; directory is expanded, as `project-root' may return `~/...'.
-  (let ((latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}"))
+  (let ((latex-to-svg-backend-preamble-macros "\\input{macros.tex}"))
     (cl-letf (((symbol-function 'project-current)
                (lambda (&rest _) '(transient . "~/my proj_x"))))
-      (should (equal (latex-to-svg-backend--not-precompiled)
+      (should (equal (latex-to-svg-backend--macros)
                      (format "\\makeatletter\\def\\input@path{{%s}}\\makeatother
 \\input{macros.tex}"
                              (expand-file-name "~/my proj_x/")))))
     (latex-to-svg-backend-tests--outside-a-project
       (let ((default-directory "/tmp/paper/"))
-        (should (equal (latex-to-svg-backend--not-precompiled)
+        (should (equal (latex-to-svg-backend--macros)
                        "\\makeatletter\\def\\input@path{{/tmp/paper/}}\\makeatother
 \\input{macros.tex}"))))))
 
-(ert-deftest latex-to-svg-backend-not-precompiled-folds-into-the-latex-key ()
+(ert-deftest latex-to-svg-backend-macros-fold-into-the-latex-key ()
   ;; The text and the directory are part of the LaTeX key, so two projects
   ;; with the same `\input{macros.tex}' do not share entries; the RaTeX
   ;; key ignores both.
@@ -3144,7 +3144,7 @@ and one in a formula's own black.")
            (default-directory "/tmp/a/")
            (base (latex-to-svg-backend--cache-key "$x$"))
            (ratex (latex-to-svg-backend--cache-key "$x$" 'ratex))
-           (latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}")
+           (latex-to-svg-backend-preamble-macros "\\input{macros.tex}")
            (a (latex-to-svg-backend--cache-key "$x$")))
       (should-not (equal a base))
       (should (equal ratex (latex-to-svg-backend--cache-key "$x$" 'ratex)))
@@ -3154,42 +3154,42 @@ and one in a formula's own black.")
       (should (equal base (latex-to-svg-backend--cache-key
                            "$x$" 'latex
                            (list :preamble (latex-to-svg-backend--preamble)
-                                 :not-precompiled "")))))))
+                                 :macros "")))))))
 
 (ert-deftest latex-to-svg-backend-input-directory-refuses-unusable-directories ()
   ;; A directory TeX would read as code, or one on another host, gets no
   ;; `\input@path' line; each refusal is reported once per buffer.
   (latex-to-svg-backend-tests--outside-a-project
     (with-temp-buffer
-      (let ((latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}")
+      (let ((latex-to-svg-backend-preamble-macros "\\input{macros.tex}")
             (warnings nil))
         (cl-letf (((symbol-function 'display-warning)
                    (lambda (&rest w) (push w warnings))))
           (dolist (dir '("/tmp/50%/" "/tmp/a{b}/" "/tmp/x#1/" "/tmp/a~b/"
                          "/tmp/back\\slash/"))
             (let ((default-directory dir))
-              (should (equal (latex-to-svg-backend--not-precompiled)
+              (should (equal (latex-to-svg-backend--macros)
                              "\\input{macros.tex}"))))
           (should (= 1 (length warnings)))
           (let ((default-directory "/ssh:host:/home/me/paper/"))
-            (should (equal (latex-to-svg-backend--not-precompiled)
+            (should (equal (latex-to-svg-backend--macros)
                            "\\input{macros.tex}")))
           (should (= 2 (length warnings)))
           (should (string-match-p "remote" (nth 1 (car warnings))))
           (with-temp-buffer
             (let ((default-directory "/ssh:host:/home/me/paper/"))
-              (latex-to-svg-backend--not-precompiled)))
+              (latex-to-svg-backend--macros)))
           (should (= 3 (length warnings))))))))
 
-(ert-deftest latex-to-svg-backend-compile-writes-the-not-precompiled-text ()
-  ;; The not-precompiled text goes before `\begin{document}': after the `%&' line
+(ert-deftest latex-to-svg-backend-compile-writes-the-macros-text ()
+  ;; The macros text goes before `\begin{document}': after the `%&' line
   ;; with a `.fmt' file, after the preamble without.
   (latex-to-svg-backend-tests--with-fake-processes
     (latex-to-svg-backend-tests--outside-a-project
-      (setq-local latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}")
+      (setq-local latex-to-svg-backend-preamble-macros "\\input{macros.tex}")
       (setq default-directory "/tmp/paper/")
       (let* ((doc "$\\RR$")
-             (text (latex-to-svg-backend--not-precompiled))
+             (text (latex-to-svg-backend--macros))
              (key (latex-to-svg-backend--cache-key doc))
              (fmt (latex-to-svg-backend--format-file "fake-format"))
              (source (lambda ()
@@ -3225,15 +3225,15 @@ and one in a formula's own black.")
                                  "\\end{document}\n"))))))))
 
 (ert-deftest latex-to-svg-backend-fallback-uses-the-requesting-buffer ()
-  ;; RaTeX ignores the not-precompiled text; the LaTeX fallback, started from
+  ;; RaTeX ignores the macros text; the LaTeX fallback, started from
   ;; the sentinel in another buffer, compiles with the requesting
   ;; buffer's, under the key that buffer computes.
   (latex-to-svg-backend-tests--with-public-api
     (latex-to-svg-backend-tests--outside-a-project
-      (setq-local latex-to-svg-backend-preamble-not-precompiled "\\input{macros.tex}")
+      (setq-local latex-to-svg-backend-preamble-macros "\\input{macros.tex}")
       (setq default-directory "/tmp/paper/")
       (let* ((doc "$\\RR$")
-             (text (latex-to-svg-backend--not-precompiled))
+             (text (latex-to-svg-backend--macros))
              (latex-key (latex-to-svg-backend--cache-key doc 'latex))
              (callbacks 0))
         (cl-letf (((symbol-function 'run-with-timer) #'ignore))
@@ -3257,7 +3257,7 @@ and one in a formula's own black.")
                               :x-height 10 :color "#000000"
                               :callback #'ignore))))))))
 
-(ert-deftest latex-to-svg-backend-not-precompiled-end-to-end ()
+(ert-deftest latex-to-svg-backend-macros-end-to-end ()
   ;; End to end (needs latex + dvisvgm): project macros `\input' from a
   ;; directory with a space and an underscore in its name, one file below
   ;; it, with the precompiled preamble and without.
@@ -3275,7 +3275,7 @@ and one in a formula's own black.")
           (with-temp-file (expand-file-name "sub/more.tex" project)
             (insert "\\newcommand{\\QQ}{\\mathbb{Q}}\n"))
           (setq default-directory project)
-          (setq-local latex-to-svg-backend-preamble-not-precompiled
+          (setq-local latex-to-svg-backend-preamble-macros
                       "\\input{macros.tex}\n\\input{sub/more.tex}")
           (cl-letf (((symbol-function 'project-current) #'ignore)
                     ((symbol-function 'latex-to-svg-backend-available-p)
@@ -3302,8 +3302,22 @@ and one in a formula's own black.")
 
 ;;;; Buffer-local options
 
+(ert-deftest latex-to-svg-backend-old-preamble-names-still-work ()
+  ;; The names before 0.16.0 are obsolete aliases: a `.dir-locals.el'
+  ;; that sets one sets the new option in the buffer.
+  (with-temp-buffer
+    (set (make-local-variable 'latex-to-svg-backend-appended-preamble)
+         "\\usepackage{physics}")
+    (set (make-local-variable 'latex-to-svg-backend-preamble-not-precompiled)
+         "\\def\\a{a}")
+    (should (local-variable-p 'latex-to-svg-backend-preamble-packages))
+    (should (equal latex-to-svg-backend-preamble-packages
+                   "\\usepackage{physics}"))
+    (should (equal latex-to-svg-backend-preamble-macros "\\def\\a{a}")))
+  (should (equal latex-to-svg-backend-preamble-packages "")))
+
 (ert-deftest latex-to-svg-backend-buffer-local-preamble-searches-the-project ()
-  ;; A buffer-local `-preamble' or `-appended-preamble' starts the preamble
+  ;; A buffer-local `-preamble' or `-preamble-packages' starts the preamble
   ;; with the `\input@path' line, so the dump, which runs in the cache,
   ;; finds a relative `\input'; the directory is then part of the `.fmt'
   ;; key.  A global value writes no such line and shares one `.fmt' file.
@@ -3312,7 +3326,7 @@ and one in a formula's own black.")
       (let ((default-directory "/tmp/a/")
             (global (latex-to-svg-backend--preamble)))
         (should-not (string-search "input@path" global))
-        (setq-local latex-to-svg-backend-appended-preamble "\\input{macros.tex}")
+        (setq-local latex-to-svg-backend-preamble-packages "\\input{macros.tex}")
         (let ((a (latex-to-svg-backend--preamble)))
           (should (string-prefix-p
                    "\\makeatletter\\def\\input@path{{/tmp/a/}}\\makeatother\n" a))
@@ -3321,7 +3335,7 @@ and one in a formula's own black.")
             (should-not (equal (latex-to-svg-backend--format-key a)
                                (latex-to-svg-backend--format-key
                                 (latex-to-svg-backend--preamble))))))
-        (kill-local-variable 'latex-to-svg-backend-appended-preamble)
+        (kill-local-variable 'latex-to-svg-backend-preamble-packages)
         (setq-local latex-to-svg-backend-preamble "\\documentclass{standalone}")
         (should (string-search "input@path" (latex-to-svg-backend--preamble)))
         (kill-local-variable 'latex-to-svg-backend-preamble)
@@ -3333,7 +3347,7 @@ and one in a formula's own black.")
   ;; in another buffer: it dumps the preamble it is given.
   (latex-to-svg-backend-tests--outside-a-project
     (with-temp-buffer
-      (setq-local latex-to-svg-backend-appended-preamble "\\usepackage{physics}")
+      (setq-local latex-to-svg-backend-preamble-packages "\\usepackage{physics}")
       (setq default-directory "/tmp/paper/")
       (let ((preamble (latex-to-svg-backend--preamble))
             (latex-to-svg-backend-cache-directory (make-temp-file "l2s-dump" t))
@@ -3429,7 +3443,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
 
 (ert-deftest latex-to-svg-backend-buffer-local-preamble-end-to-end ()
   ;; End to end (needs latex + dvisvgm): a buffer-local
-  ;; `-appended-preamble' with a relative `\input' is dumped into the
+  ;; `-preamble-packages' with a relative `\input' is dumped into the
   ;; buffer's own `.fmt' file, and its macros typeset.
   (skip-unless (latex-to-svg-backend-tools-available-p))
   (let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-append-e2e" t))
@@ -3444,7 +3458,7 @@ The binary is bound to `binary'; the dump is stubbed to write the
           (with-temp-file (expand-file-name "macros.tex" project)
             (insert "\\newcommand{\\RR}{\\mathbb{R}}\n"))
           (setq default-directory project)
-          (setq-local latex-to-svg-backend-appended-preamble "\\input{macros.tex}")
+          (setq-local latex-to-svg-backend-preamble-packages "\\input{macros.tex}")
           (cl-letf (((symbol-function 'project-current) #'ignore)
                     ((symbol-function 'latex-to-svg-backend-available-p)
                      (lambda () t)))

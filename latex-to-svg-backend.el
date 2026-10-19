@@ -201,9 +201,9 @@ ENGINE is `latex' (the default, also nil), `ratex' or `texres'; the
 caller has checked it (see `latex-to-svg-backend--engine').  INPUTS is the plist
 of `latex-to-svg-backend--inputs', nil meaning the current buffer's.
 The engine's input besides LATEX is folded in so changing it
-invalidates the cache: the preamble and the not-precompiled text for
+invalidates the cache: the preamble and the macros text for
 the LaTeX engine (see `latex-to-svg-backend--latex-cache-salt'; without
-a not-precompiled text, the key is the one it had before RaTeX was
+a macros text, the key is the one it had before RaTeX was
 added), the engine's name and its macros for the RaTeX one, the
 engine's name and the LaTeX engine's text for the texres one.  So is
 `latex-to-svg-backend--cache-version', so a pipeline change re-keys warm

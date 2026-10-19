@@ -64,44 +64,49 @@ environments like `equation'/`align' — not just inline `$...$'
 errors with \"Missing $ inserted\" on display math).  dvisvgm's
 `--exact-bbox' then crops to the actual ink.
 
-See also `latex-to-svg-backend-appended-preamble' for adding extra packages
+See also `latex-to-svg-backend-preamble-packages' for adding packages
 without replacing this base."
   :type 'string
   :group 'latex-to-svg-backend-latex)
 
-(defcustom latex-to-svg-backend-appended-preamble ""
-  "Extra LaTeX code appended after `latex-to-svg-backend-preamble'.
-Use this to load additional packages (e.g. `\\usepackage{braket}',
-`\\usepackage{physics}') without replacing the base preamble.  The
-value is folded into the cache key, so changing it automatically
-invalidates cached SVGs.
+(define-obsolete-variable-alias 'latex-to-svg-backend-appended-preamble
+  'latex-to-svg-backend-preamble-packages "0.16.0")
 
+(defcustom latex-to-svg-backend-preamble-packages ""
+  "LaTeX code for packages, appended to `latex-to-svg-backend-preamble'.
+For LaTeX packages, including your own `.sty' files, which rarely
+change: `\\usepackage{physics}', say.  They are dumped into the `.fmt'
+file (see `latex-to-svg-backend-precompile') and read once.  Changing
+this text dumps the whole `.fmt' file again.  For a few macros of your
+own that you change often, see `latex-to-svg-backend-preamble-macros'.
+
+The value is folded into the cache key, so changing it re-renders.
 Set in a project's `.dir-locals.el', it is dumped into a `.fmt' file of
 that project, and `\\input' looks for its files in the project root, as
-for `latex-to-svg-backend-preamble-not-precompiled'.  After editing a
-file it loads, `latex-to-svg-backend-invalidate-format' makes the next
-compile dump the `.fmt' file again."
+for `latex-to-svg-backend-preamble-macros'.  After editing a file it
+loads, `latex-to-svg-backend-invalidate-format' makes the next compile
+dump the `.fmt' file again."
   :type 'string
   :group 'latex-to-svg-backend-latex)
 
-(defcustom latex-to-svg-backend-preamble-not-precompiled ""
-  "LaTeX code written after the preamble and not precompiled.
-Meant to be set per project in `.dir-locals.el', to the definitions a
-project's equations need, typically `\\input{macros.tex}'.  `\\input'
-looks for the file in the project root (`project-root'), or in
-`default-directory' outside a project, so `\\input{paper/macros.tex}'
-names a file below the root.
+(define-obsolete-variable-alias 'latex-to-svg-backend-preamble-not-precompiled
+  'latex-to-svg-backend-preamble-macros "0.16.0")
 
-Unlike `latex-to-svg-backend-appended-preamble', this is not dumped into
-the precompiled `.fmt' file (see `latex-to-svg-backend-precompile'): it
-is written into every compile.  That adds no `.fmt' file per project,
-but it is read again on every compile, so packages belong in
-`latex-to-svg-backend-appended-preamble', where they are dumped once.
+(defcustom latex-to-svg-backend-preamble-macros ""
+  "LaTeX code for a few macros of your own, written after the preamble.
+For macros you change often, typically `\\input{macros.tex}', set per
+project in `.dir-locals.el'.  They are read at every compile and are
+not dumped into the `.fmt' file (see `latex-to-svg-backend-precompile'),
+so an edit dumps nothing again.  Packages belong in
+`latex-to-svg-backend-preamble-packages', where they are dumped once.
 
-The value and the directory are folded into the cache key; the contents
-of `macros.tex' are not, so after editing it the equations have to be
-compiled again (`latex-to-svg-backend-invalidate').  The RaTeX engine
-ignores this option."
+`\\input' looks for the file in the project root (`project-root'), or
+in `default-directory' outside a project, so `\\input{paper/macros.tex}'
+names a file below the root.  The value and the directory are folded
+into the cache key; the contents of `macros.tex' are not, so after
+editing it the equations have to be compiled again
+\(`latex-to-svg-backend-invalidate').  The RaTeX engine ignores this
+option."
   :type 'string
   :group 'latex-to-svg-backend-latex)
 
@@ -140,7 +145,7 @@ The value is folded into the cache key, so changing it re-renders."
   "When non-nil, precompile the preamble to a LaTeX `.fmt' file.
 
 The class and packages in `latex-to-svg-backend-preamble' /
-`latex-to-svg-backend-appended-preamble' are dumped once, with TeX's
+`latex-to-svg-backend-preamble-packages' are dumped once, with TeX's
 `\\dump', to a `.fmt' file keyed by the preamble text; every equation
 compile then loads it with a `%&' first line instead of re-reading the
 preamble, which speeds each compile up noticeably.
@@ -207,14 +212,14 @@ returns nil stands for `latex-to-svg-backend-latex-program'.")
 ;;;; Preamble
 
 (defun latex-to-svg-backend--preamble ()
-  "Return the current buffer's LaTeX preamble: the base plus appended packages.
+  "Return the current buffer's LaTeX preamble: the base plus its packages.
 This is the exact text embedded before `\\begin{document}' in a full
 compile, and the text dumped into the precompiled `.fmt' file.  When
 `latex-to-svg-backend-line-width' is set, a `\\sa@width' override is
 appended so the `varwidth' box uses that width (see that variable).
 
 When `latex-to-svg-backend-preamble' or
-`latex-to-svg-backend-appended-preamble' has a buffer-local value, the
+`latex-to-svg-backend-preamble-packages' has a buffer-local value, the
 text starts with the line of `latex-to-svg-backend--input-path', so a
 relative `\\input' in it finds its file: the dump runs in the cache.
 The directory is then part of the text, so two projects with the same
@@ -222,11 +227,11 @@ The directory is then part of the text, so two projects with the same
 everyone shares one."
   (concat
    (when (or (local-variable-p 'latex-to-svg-backend-preamble)
-             (local-variable-p 'latex-to-svg-backend-appended-preamble))
+             (local-variable-p 'latex-to-svg-backend-preamble-packages))
      (latex-to-svg-backend--input-path))
    latex-to-svg-backend-preamble
-   (unless (string-empty-p latex-to-svg-backend-appended-preamble)
-     (concat "\n" latex-to-svg-backend-appended-preamble))
+   (unless (string-empty-p latex-to-svg-backend-preamble-packages)
+     (concat "\n" latex-to-svg-backend-preamble-packages))
    ;; Override `standalone's varwidth width (`\sa@width', default
    ;; `\linewidth').  Placed last so it wins over the class default.
    (when latex-to-svg-backend-line-width
@@ -275,37 +280,37 @@ nil when that refuses it."
   (when-let* ((dir (latex-to-svg-backend--input-directory)))
     (format "\\makeatletter\\def\\input@path{{%s}}\\makeatother\n" dir)))
 
-(defun latex-to-svg-backend--not-precompiled ()
+(defun latex-to-svg-backend--macros ()
   "Return the current buffer's text for after the preamble, or \"\".
-That is `latex-to-svg-backend-preamble-not-precompiled', preceded by
+That is `latex-to-svg-backend-preamble-macros', preceded by
 the line of `latex-to-svg-backend--input-path', or \"\" when the option
 is empty."
-  (if (string-empty-p latex-to-svg-backend-preamble-not-precompiled)
+  (if (string-empty-p latex-to-svg-backend-preamble-macros)
       ""
     (concat (latex-to-svg-backend--input-path)
-            latex-to-svg-backend-preamble-not-precompiled)))
+            latex-to-svg-backend-preamble-macros)))
 
 (defun latex-to-svg-backend--latex-inputs ()
   "Return what the LaTeX engine reads from the current buffer, as a plist.
-That is `(:preamble PREAMBLE :not-precompiled TEXT)', the texts of
+That is `(:preamble PREAMBLE :macros TEXT)', the texts of
 `latex-to-svg-backend--preamble' and
-`latex-to-svg-backend--not-precompiled'.  A request reads them once,
+`latex-to-svg-backend--macros'.  A request reads them once,
 in the buffer that makes it, and passes them on: a compile may start
 from another compile's sentinel, and a fallback from its own, where the
 current buffer is another."
   (list :preamble (latex-to-svg-backend--preamble)
-        :not-precompiled (latex-to-svg-backend--not-precompiled)))
+        :macros (latex-to-svg-backend--macros)))
 
 (defun latex-to-svg-backend--latex-cache-salt (inputs)
   "Return what `latex-to-svg-backend--cache-key' folds in for LaTeX.
 INPUTS is as for `latex-to-svg-backend--latex-inputs'.  That is the
-preamble, then the not-precompiled text when it is not empty, so an
+preamble, then the macros text when it is not empty, so an
 empty one leaves the key as it was before that option existed."
   (let ((preamble (plist-get inputs :preamble))
-        (not-precompiled (plist-get inputs :not-precompiled)))
-    (if (string-empty-p not-precompiled)
+        (macros (plist-get inputs :macros)))
+    (if (string-empty-p macros)
         preamble
-      (concat preamble "\n" not-precompiled))))
+      (concat preamble "\n" macros))))
 
 ;;;; Preamble precompilation (.fmt)
 
@@ -946,7 +951,7 @@ A theme change therefore re-tints from cache without recompiling."
          (svg (latex-to-svg-backend--svg-file key))
          (inputs (or inputs (latex-to-svg-backend--latex-inputs)))
          (preamble (plist-get inputs :preamble))
-         (not-precompiled (plist-get inputs :not-precompiled))
+         (macros (plist-get inputs :macros))
          (format-file (latex-to-svg-backend--ensure-format
                        preamble (plist-get toolchain :program)))
          ;; Everything before LATEX.  Its lines are counted, so that an
@@ -960,9 +965,9 @@ A theme change therefore re-tints from cache without recompiling."
                            (concat "%& " (file-name-sans-extension format-file)
                                    "\n")
                          (concat preamble "\n"))
-                       (if (string-empty-p not-precompiled)
+                       (if (string-empty-p macros)
                            ""
-                         (concat not-precompiled "\n"))
+                         (concat macros "\n"))
                        "\\begin{document}\n"
                        (plist-get toolchain :prefix)))
          (offset (seq-count (lambda (c) (eq c ?\n)) head))

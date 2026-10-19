@@ -133,7 +133,7 @@ To use texres, install it (see its README; on macOS `brew install leoliu0/texres
 
 What changes with texres, from texres 0.7.7:
 
-- **The same LaTeX.** `latex-to-svg-backend-preamble`, `-appended-preamble`, `-preamble-not-precompiled`, `-line-width`, `-precompile` and `-metadata-prefix` apply as for the LaTeX engine, and compile metadata works. texres dumps its own `.fmt` file, next to the LaTeX engine's.
+- **The same LaTeX.** `latex-to-svg-backend-preamble`, `-preamble-packages`, `-preamble-macros`, `-line-width`, `-precompile` and `-metadata-prefix` apply as for the LaTeX engine, and compile metadata works. texres dumps its own `.fmt` file, next to the LaTeX engine's.
 - **A link named `pdflatex`.** texres runs one `pdflatex` pass only when it is called by that name, so the backend makes a symbolic link to it in the `texres/` subdirectory of the cache. Nothing on `exec-path` is shadowed.
 - **PDF, then SVG.** texres writes PDF, which `pdftocairo -svg -noshrink` converts; the backend crops the SVG to the ink, as `dvisvgm --exact-bbox` does. A rule that ends the ink (a fraction bar, the bar of a root) leaves the box 0.2pt wider on each side than with `dvisvgm`.
 - **The ink.** The backend writes `\color[RGB]{1,2,3}` before the equation and turns that color into `currentColor`, so a formula's own `\color{black}` stays black. This needs `xcolor`, which the default preamble loads; without it, black becomes `currentColor`.
@@ -152,7 +152,7 @@ The time to compile a new equation, with each engine, for the 20 equations in [`
 
 *One at a time* compiles an equation, waits for it, then starts the next. *All at once* is what a front-end does when it opens a buffer; the compiles then run in parallel, which brings LaTeX to 66–70 ms per equation and RaTeX to 2–3 ms. Each figure is the range over three rounds.
 
-The LaTeX runs used the default preamble. Loading `physics`, `stmaryrd`, `siunitx` and `mathtools` through `latex-to-svg-backend-appended-preamble` as well changed the median to 335–338 ms, the batch to 1366–1379 ms and the `.fmt` build to 517–529 ms: the `.fmt` loads the packages once, so each equation barely pays for them.
+The LaTeX runs used the default preamble. Loading `physics`, `stmaryrd`, `siunitx` and `mathtools` through `latex-to-svg-backend-preamble-packages` as well changed the median to 335–338 ms, the batch to 1366–1379 ms and the `.fmt` build to 517–529 ms: the `.fmt` loads the packages once, so each equation barely pays for them.
 
 Measured in a running Emacs 32.0.50 with native compilation and the package byte-compiled, on an Apple M2 (8 cores) under macOS 27.0, with TeX Live 2026 (pdfTeX 1.40.29), dvisvgm 3.6 and the RaTeX v0.1.14 release of `render-svg`.
 
@@ -321,8 +321,8 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
 | `-cache-directory` | `-latex-program` | `-ratex-program` |
 | `-cache-max-age` | `-dvisvgm-program` | `-ratex-macros` |
 | `-gc-interval` | `-preamble` | |
-| `-font-scale` | `-appended-preamble` | |
-| `-jobs` | `-preamble-not-precompiled` | |
+| `-font-scale` | `-preamble-packages` | |
+| `-jobs` | `-preamble-macros` | |
 | | `-line-width` | |
 | | `-metadata-prefix` | |
 | | `-precompile` | |
@@ -339,8 +339,8 @@ The functions under [API](#api) work with all three; `latex-to-svg-backend-metad
 | `latex-to-svg-backend-latex-program` | `"latex"` | the `latex` binary |
 | `latex-to-svg-backend-dvisvgm-program` | `"dvisvgm"` | the `dvisvgm` binary |
 | `latex-to-svg-backend-preamble` | `standalone[varwidth]` + `amsmath`/`xcolor` | the document class and base packages |
-| `latex-to-svg-backend-appended-preamble` | `""` | extra preamble lines (your macros, packages) appended to the base — see [A project's preamble](#a-projects-preamble) |
-| `latex-to-svg-backend-preamble-not-precompiled` | `""` | LaTeX code written after the preamble and not dumped into the `.fmt` file — see [A project's preamble](#a-projects-preamble) |
+| `latex-to-svg-backend-preamble-packages` | `""` | packages appended to the base, dumped into the `.fmt` file — see [A project's preamble](#a-projects-preamble) |
+| `latex-to-svg-backend-preamble-macros` | `""` | a few macros of your own, read at every compile — see [A project's preamble](#a-projects-preamble) |
 | `latex-to-svg-backend-line-width` | `nil` | max equation width (LaTeX dim); raise it (e.g. `"20cm"`) so wide numbered equations keep their number on one line — see below |
 | `latex-to-svg-backend-cache-directory` | `$XDG_CACHE_HOME/emacs/latex-to-svg/` | cache root; holds `svg/` (sharded SVGs + sidecars) and `fmt/` (`.fmt` files) — see below |
 | `latex-to-svg-backend-cache-max-age` | `90` | GC deletes equations untouched for this many days (`nil` = no age limit) |
@@ -358,22 +358,19 @@ The functions under [API](#api) work with all three; `latex-to-svg-backend-metad
 
 A LaTeX project usually defines its own macros (`\newcommand`, `\DeclareMathOperator`, a local `.sty`) and loads its own packages, and its equations fail with the global preamble. The backend reads its options in the buffer that requests an equation, so a project sets them in its `.dir-locals.el`. A project's preamble can go in two places:
 
-| Option | Dumped into a `.fmt` file | Use it for |
+| Option | Use it for | Treatment |
 | --- | --- | --- |
-| `latex-to-svg-backend-appended-preamble` | yes: one `.fmt` file per project, which `latex-to-svg-backend-gc` deletes once it is unused | packages, and macros that change rarely |
-| `latex-to-svg-backend-preamble-not-precompiled` | no: written into every compile | macros, when a second `.fmt` file is not wanted |
+| `latex-to-svg-backend-preamble-packages` | LaTeX packages, including your own `.sty` files, which rarely change | dumped into a `.fmt` file of the project and read once; changing them dumps the whole `.fmt` file again |
+| `latex-to-svg-backend-preamble-macros` | a few macros of your own that you change often | read at every compile; an edit dumps nothing |
 
-The first compiles faster, since the packages are read once, at the dump; the second adds no `.fmt` file but is read again on every compile. For example:
-
-```elisp
-((nil . ((latex-to-svg-backend-appended-preamble . "\\usepackage{physics}\n\\input{macros.tex}"))))
-```
-
-or
+The `.fmt` file of the project is deleted by `latex-to-svg-backend-gc` once it is unused. A macros file that rarely changes can go in `-preamble-packages` too, where it is read once. For example:
 
 ```elisp
-((nil . ((latex-to-svg-backend-preamble-not-precompiled . "\\input{macros.tex}"))))
+((nil . ((latex-to-svg-backend-preamble-packages . "\\usepackage{physics}")
+         (latex-to-svg-backend-preamble-macros . "\\input{macros.tex}"))))
 ```
+
+The names before 0.16.0, `latex-to-svg-backend-appended-preamble` and `latex-to-svg-backend-preamble-not-precompiled`, are obsolete aliases of these two and still work.
 
 Every backslash is doubled, as in any Elisp string. `\input` looks for the file in the project root (`project-root`), or in `default-directory` outside a project, from either option: the backend writes `\makeatletter\def\input@path{{/path/to/project/}}\makeatother` before the text. A file below the root is named relative to it, as in `\input{paper/macros.tex}`. A value that defines `\input@path` itself replaces the backend's; to search one more directory, append to it instead:
 
@@ -383,7 +380,7 @@ Every backslash is doubled, as in any Elisp string. `\input` looks for the file 
 
 **After editing a file the preamble loads**, such as `macros.tex`, compile the equations again: the cache key covers the options' text and the directory, not the contents of the files they load, and a `.fmt` file holds those contents as they were at the dump. `C-u M-x latex-to-svg-frontend-refresh` does both for the current buffer: it deletes the buffer's `.fmt` file (`latex-to-svg-backend-invalidate-format`) and compiles its equations again. It does this for the current buffer only; other open files of the project need their own.
 
-- The directory is part of the cache key, and of the `.fmt` file's key when `-preamble` or `-appended-preamble` is set per buffer, so two projects with the same `\input{macros.tex}` share neither SVGs nor `.fmt` files. A buffer with no buffer-local preamble uses the one `.fmt` file everyone shares.
+- The directory is part of the cache key, and of the `.fmt` file's key when `-preamble` or `-preamble-packages` is set per buffer, so two projects with the same `\input{macros.tex}` share neither SVGs nor `.fmt` files. A buffer with no buffer-local preamble uses the one `.fmt` file everyone shares.
 - A directory holding one of `\ { } % # ~`, or a remote one (the compile runs locally), gets no `\input@path` and is reported once per buffer.
 - Neither option has a `:safe` predicate, as both are LaTeX code: Emacs asks
   before applying them from a `.dir-locals.el`, and answering `!` trusts only
@@ -439,7 +436,7 @@ Three interactive commands manage the cache directly:
 
 ### Preamble precompilation (`.fmt`)
 
-Every equation is its own tiny LaTeX document, so each compile re-reads the class and every package in the preamble (`amsmath`, `xcolor`, and whatever you add via `latex-to-svg-backend-appended-preamble`). That parsing dominates the runtime of a small equation. With `latex-to-svg-backend-precompile` (default `t`) the backend dumps the preamble **once** to a LaTeX `.fmt` file with TeX's own `\dump`, keyed by the preamble text, and every equation compile then loads it via a `%&` first line instead of re-parsing the packages — typically **25–40% faster per equation**, more with a heavier preamble.
+Every equation is its own tiny LaTeX document, so each compile re-reads the class and every package in the preamble (`amsmath`, `xcolor`, and whatever you add via `latex-to-svg-backend-preamble-packages`). That parsing dominates the runtime of a small equation. With `latex-to-svg-backend-precompile` (default `t`) the backend dumps the preamble **once** to a LaTeX `.fmt` file with TeX's own `\dump`, keyed by the preamble text, and every equation compile then loads it via a `%&` first line instead of re-parsing the packages — typically **25–40% faster per equation**, more with a heavier preamble.
 
 It is a pure optimization with a graceful fallback: when the dump fails, the backend embeds the full preamble in each equation for the rest of the session. A compile that loaded the `.fmt` file and failed is handled as any other failed compile, and the `.fmt` file stays in use. Each dump writes a stamp, `<fkey>.eld`, that names the files the `.fmt` file was made from, with their modification times: the LaTeX binary, the distribution's own `latex.fmt`, which the distribution dumps again when its kernel or its binary is updated, and the `ls-R` index of each TeX tree the dump read from, which changes when a package is installed or updated. Each compile that loads the `.fmt` file checks these files, and when one has changed (a TeX upgrade, a `tlmgr update`, another TeX first on `exec-path`), the `.fmt` file is dumped again. MiKTeX has no `ls-R`, so there a package update is not detected. `M-x latex-to-svg-backend-flush-format` is the manual escape hatch. Set `latex-to-svg-backend-precompile` to `nil` to disable it entirely.
 
@@ -456,7 +453,7 @@ macros, encodings), and pulling them all into the default preamble would bloat
 it — every equation would compile slower, users would be forced to install a
 large TeX distribution for features they never use, and the more packages we
 load the higher the chance of version-based conflicts between them. So we keep
-the base lean and give you `latex-to-svg-backend-appended-preamble` to add
+the base lean and give you `latex-to-svg-backend-preamble-packages` to add
 exactly what a given input needs. It folds into the cache key, so changing it
 re-renders. A few common cases:
 
@@ -468,15 +465,16 @@ re-renders. A few common cases:
   package, which maps combining accents onto their math-accent commands:
 
   ```elisp
-  (setq latex-to-svg-backend-appended-preamble "\\usepackage{pdfmathaccents}")
+  (setq latex-to-svg-backend-preamble-packages "\\usepackage{pdfmathaccents}")
   ```
 
   More generally, any missing character can be declared with `\DeclareUnicodeCharacter`
   (from `inputenc`) or handled by loading the appropriate package.
 
 - **A macro or environment the input uses isn't defined** (`Undefined control
-  sequence`) — load the package that provides it (or define the macro) via
-  `latex-to-svg-backend-appended-preamble`.
+  sequence`) — load the package that provides it via
+  `latex-to-svg-backend-preamble-packages`, or define the macro in
+  `latex-to-svg-backend-preamble-macros`.
 
 If a compile fails, the backend warns with a clickable link to the LaTeX
 `.log` (kept next to the cached SVG under `svg/`), which is the fastest way to
@@ -487,8 +485,8 @@ RaTeX's output, which names the command it could not parse (see
 A failure caused by the formula is recorded, and the equation is not compiled
 again (see [Failed compiles](#failed-compiles-and-the-fallback-engine)).
 Anything that changes the cache key retries on its own: editing the equation,
-`latex-to-svg-backend-preamble`, `latex-to-svg-backend-appended-preamble`,
-`latex-to-svg-backend-line-width`, or `latex-to-svg-backend-ratex-macros`. Two
+`latex-to-svg-backend-preamble`, `latex-to-svg-backend-preamble-packages`,
+`latex-to-svg-backend-preamble-macros`, `latex-to-svg-backend-line-width`, or `latex-to-svg-backend-ratex-macros`. Two
 fixes do not change the key: installing a missing TeX package (a `\usepackage`
 for a `.sty` your TeX installation lacks makes every equation fail) and
 upgrading RaTeX. After those, regenerate the equations in the front-end
