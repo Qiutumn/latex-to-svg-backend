@@ -810,6 +810,7 @@ completion event."
           (latex-to-svg-backend--pending (make-hash-table :test 'equal))
           (latex-to-svg-backend--queue nil)
           (latex-to-svg-backend--running nil)
+          (latex-to-svg-backend--processes (make-hash-table :test 'equal))
           ;; Tests leave compiles unfinished, each holding a slot: on a
           ;; machine with few processors the next one would queue.
           (latex-to-svg-backend-jobs 100)
@@ -840,6 +841,12 @@ completion event."
                (lambda (process) (aref process 1)))
               ((symbol-function 'process-exit-status)
                (lambda (process) (aref process 2)))
+              ((symbol-function 'delete-process)
+               ;; As Emacs does, the sentinel runs before `delete-process'
+               ;; returns.
+               (lambda (process)
+                 (latex-to-svg-backend-tests--finish-fake-process
+                  process 9 nil 'signal)))
               ((symbol-function 'display-warning)
                (lambda (&rest warning)
                  (push warning l2s-test-warnings)))
@@ -2349,7 +2356,7 @@ NEWEST is a function returning the most recently started fake process."
                                                invocation-directory)))
         (let ((buffer (generate-new-buffer " *l2s-127*")))
           (latex-to-svg-backend--run-process-chain
-           temporary-file-directory buffer
+           "l2s-127" temporary-file-directory buffer
            (list (list 'latex (list program) "out"))
            (lambda (_success &optional exit) (push exit results)))
           (latex-to-svg-backend-tests--finish-fake-process
@@ -3702,6 +3709,107 @@ The binary is bound to `binary'; the dump is stubbed to write the
           (should (file-exists-p new-fmt))
           (should (file-exists-p new-eld)))
       (delete-directory latex-to-svg-backend-cache-directory t))))
+
+;;;; Cancelling a request
+
+(ert-deftest latex-to-svg-backend-cancel-takes-a-queued-compile-off-the-queue ()
+  ;; With one slot, the second equation waits; cancelling its request
+  ;; takes it off the queue, so the slot stays free when the first ends.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((latex-to-svg-backend-jobs 1)
+          (called nil)
+          (cancelled (lambda (_outcome) (error "Cancelled callback called"))))
+      (latex-to-svg-backend "$a$" :engine 'ratex
+                            :callback (lambda (_outcome) (setq called t)))
+      (latex-to-svg-backend "$b$" :engine 'ratex :callback cancelled)
+      (should (= (length l2s-test-processes) 1))
+      (should (latex-to-svg-backend-cancel cancelled))
+      (should-not latex-to-svg-backend--queue)
+      (should-not (gethash (latex-to-svg-backend--cache-key "$b$" 'ratex)
+                           latex-to-svg-backend--pending))
+      (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
+      (latex-to-svg-backend-tests--run-timers)
+      (should called)
+      (should (= (length l2s-test-processes) 1))
+      (should-not latex-to-svg-backend--running))))
+
+(ert-deftest latex-to-svg-backend-cancel-stops-a-running-compile ()
+  ;; The `latex' process is killed and its scratch directory deleted, the
+  ;; slot starts the queued compile, and nothing is recorded: not a
+  ;; failure, and not the `.fmt' file the compile loaded.  The same
+  ;; equation requested again compiles again.
+  (latex-to-svg-backend-tests--with-public-api
+    (let* ((latex-to-svg-backend-jobs 1)
+           (fmt (expand-file-name "fake.fmt" l2s-test-cache-dir))
+           (key (latex-to-svg-backend--cache-key "$a$"))
+           (cancelled (lambda (_outcome) (error "Cancelled callback called"))))
+      (with-temp-file fmt (insert "fake format"))
+      (cl-letf (((symbol-function 'latex-to-svg-backend--ensure-format)
+                 (lambda (_preamble &optional _program) fmt)))
+        (latex-to-svg-backend "$a$" :callback cancelled)
+        (latex-to-svg-backend "$b$" :callback #'ignore)
+        (let* ((process (car l2s-test-processes))
+               (scratch (aref process 4))
+               (buffer (plist-get (aref process 3) :buffer)))
+          (should (equal (file-name-directory (directory-file-name scratch))
+                         (file-name-as-directory
+                          (expand-file-name "tmp" l2s-test-cache-dir))))
+          (latex-to-svg-backend-cancel cancelled)
+          (should (eq (aref process 1) 'signal))
+          (should-not (file-directory-p scratch))
+          (should-not (buffer-live-p buffer))
+          (should (= (length l2s-test-processes) 2))
+          (should (equal latex-to-svg-backend--running
+                         (list (latex-to-svg-backend--cache-key "$b$"))))
+          (should-not (gethash key latex-to-svg-backend--processes))
+          (should-not (file-exists-p (latex-to-svg-backend--meta-file key)))
+          (should-not (file-exists-p (latex-to-svg-backend--log-file key)))
+          (should (file-exists-p fmt))
+          (should (zerop (hash-table-count
+                          latex-to-svg-backend--format-blocklist)))
+          (should-not l2s-test-warnings)
+          (latex-to-svg-backend-tests--run-timers)
+          (latex-to-svg-backend "$a$" :callback #'ignore)
+          (should (equal (mapcar #'car latex-to-svg-backend--queue)
+                         (list key))))))))
+
+(ert-deftest latex-to-svg-backend-cancel-keeps-a-compile-another-request-waits-for ()
+  ;; Two requests share one compile: cancelling one leaves the compile
+  ;; running for the other, whose callback alone is called.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((called nil)
+          (cancelled (lambda (_outcome) (error "Cancelled callback called"))))
+      (latex-to-svg-backend "$a$" :engine 'ratex :callback cancelled)
+      (latex-to-svg-backend "$a$" :engine 'ratex
+                            :callback (lambda (outcome) (push outcome called)))
+      (latex-to-svg-backend-cancel cancelled)
+      (should (eq (aref (car l2s-test-processes) 1) 'run))
+      (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
+      (latex-to-svg-backend-tests--run-timers)
+      (should (equal (mapcar (lambda (o) (plist-get o :kind)) called)
+                     '(formula))))))
+
+(ert-deftest latex-to-svg-backend-cancel-finds-a-request-handed-to-its-fallback ()
+  ;; RaTeX rejected the formula and the request waits for the LaTeX
+  ;; fallback: cancelling it stops that compile.
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((cancelled (lambda (_outcome) (error "Cancelled callback called"))))
+      (latex-to-svg-backend "$\\SI{3}{m}$" :engine 'ratex :fallback 'latex
+                            :callback cancelled)
+      (latex-to-svg-backend-tests--fail-ratex (car l2s-test-processes))
+      (let ((latex (car l2s-test-processes)))
+        (should (= (length l2s-test-processes) 2))
+        (should (latex-to-svg-backend-cancel cancelled))
+        (should (eq (aref latex 1) 'signal))
+        (should-not latex-to-svg-backend--running)
+        (should (zerop (hash-table-count latex-to-svg-backend--pending)))
+        (latex-to-svg-backend-tests--run-timers)))))
+
+(ert-deftest latex-to-svg-backend-cancel-of-an-unknown-callback-does-nothing ()
+  (latex-to-svg-backend-tests--with-public-api
+    (latex-to-svg-backend "$a$" :engine 'ratex :callback #'ignore)
+    (should-not (latex-to-svg-backend-cancel (lambda (_outcome))))
+    (should (eq (aref (car l2s-test-processes) 1) 'run))))
 
 (ert-deftest latex-to-svg-backend-gc-deletes-old-scratch-directories ()
   ;; A scratch directory older than a day was left by an Emacs that

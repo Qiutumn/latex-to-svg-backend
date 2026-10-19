@@ -172,6 +172,13 @@ ENGINE.")
 (defvar latex-to-svg-backend--running nil
   "Content keys of the compiles holding a slot.")
 
+(defvar latex-to-svg-backend--processes (make-hash-table :test 'equal)
+  "In-memory map of content key to the process of its compile running now.
+`latex-to-svg-backend--run-process-chain' sets it as each stage starts
+and removes it as the stage ends; `latex-to-svg-backend--stop' removes
+it before it kills the process, which tells the chain the compile was
+cancelled.")
+
 (defvar latex-to-svg-backend--in-request nil
   "Non-nil while `latex-to-svg-backend' runs.
 A request can end before it returns, as when a program is not found,
@@ -938,8 +945,10 @@ process only."
      :sentinel sentinel)))
 
 (defun latex-to-svg-backend--run-process-chain
-    (dir output-buffer stages done)
+    (key dir output-buffer stages done)
   "Run STAGES sequentially in DIR, logging to OUTPUT-BUFFER, then call DONE.
+KEY is the content key of the compile: the process of the stage that
+runs is in `latex-to-svg-backend--processes' under KEY.
 Each element of STAGES is (NAME COMMAND OUTPUT-FILE ENVIRONMENT), where
 COMMAND is an argv list passed directly to `make-process' and the
 optional ENVIRONMENT is as for `latex-to-svg-backend--start-process'.
@@ -956,7 +965,11 @@ the program of STAGE is not found, the second argument is
 `latex-to-svg-backend--compile-failed').  `make-process' signals
 `file-missing' for a name it does not find on the variable `exec-path',
 but starts an absolute file name that does not exist, which exits with
-status 127; only then is the file checked."
+status 127; only then is the file checked.
+
+A stage whose process is no longer under KEY was cancelled (see
+`latex-to-svg-backend--stop'): the chain then kills OUTPUT-BUFFER,
+deletes DIR and does not call DONE."
   (cl-labels
       ((run
         (remaining)
@@ -966,46 +979,57 @@ status 127; only then is the file checked."
                         (car remaining))
                        (settled nil))
             (condition-case err
-                (latex-to-svg-backend--start-process
-                 stage command dir output-buffer
-                 (lambda (process event)
-                   (let ((status (process-status process)))
-                     (when (and (not settled)
-                                (memq status '(exit signal)))
-                       (setq settled t)
-                       (let* ((exit-status (process-exit-status process))
-                              (output-exists (file-exists-p output-file)))
-                         (let ((print-escape-newlines t))
-                           (latex-to-svg-backend--append-process-log
-                            output-buffer
-                            (format "[%s] status=%s exit-status=%d event=%S"
-                                    stage status exit-status event)))
-                         (when (and (eq status 'exit)
-                                    (zerop exit-status)
-                                    (not output-exists))
-                           (latex-to-svg-backend--append-process-log
-                            output-buffer
-                            (format "[%s] expected output missing: %S"
-                                    stage output-file)))
-                         (cond
-                          ((and (eq status 'exit)
-                                (zerop exit-status)
-                                output-exists)
-                           (run (cdr remaining)))
-                          ((and (eq status 'exit)
-                                (= exit-status 127)
-                                (file-name-absolute-p (car command))
-                                (not (file-executable-p (car command))))
-                           (latex-to-svg-backend--append-process-log
-                            output-buffer
-                            (format "[%s] program not found: %s"
-                                    stage (car command)))
-                           (funcall done nil (cons stage (car command))))
-                          ((and (eq status 'exit)
-                                (not (zerop exit-status)))
-                           (funcall done nil (cons stage exit-status)))
-                          (t (funcall done nil)))))))
-                 environment)
+                (puthash
+                 key
+                 (latex-to-svg-backend--start-process
+                  stage command dir output-buffer
+                  (lambda (process event)
+                    (let ((status (process-status process)))
+                      (when (and (not settled)
+                                 (memq status '(exit signal)))
+                        (setq settled t)
+                        (if (not (eq (gethash key latex-to-svg-backend--processes)
+                                     process))
+                            ;; Cancelled: nobody waits for the outcome.
+                            (progn
+                              (when (buffer-live-p output-buffer)
+                                (kill-buffer output-buffer))
+                              (delete-directory dir t))
+                          (remhash key latex-to-svg-backend--processes)
+                          (let* ((exit-status (process-exit-status process))
+                                 (output-exists (file-exists-p output-file)))
+                            (let ((print-escape-newlines t))
+                              (latex-to-svg-backend--append-process-log
+                               output-buffer
+                               (format "[%s] status=%s exit-status=%d event=%S"
+                                       stage status exit-status event)))
+                            (when (and (eq status 'exit)
+                                       (zerop exit-status)
+                                       (not output-exists))
+                              (latex-to-svg-backend--append-process-log
+                               output-buffer
+                               (format "[%s] expected output missing: %S"
+                                       stage output-file)))
+                            (cond
+                             ((and (eq status 'exit)
+                                   (zerop exit-status)
+                                   output-exists)
+                              (run (cdr remaining)))
+                             ((and (eq status 'exit)
+                                   (= exit-status 127)
+                                   (file-name-absolute-p (car command))
+                                   (not (file-executable-p (car command))))
+                              (latex-to-svg-backend--append-process-log
+                               output-buffer
+                               (format "[%s] program not found: %s"
+                                       stage (car command)))
+                              (funcall done nil (cons stage (car command))))
+                             ((and (eq status 'exit)
+                                   (not (zerop exit-status)))
+                              (funcall done nil (cons stage exit-status)))
+                             (t (funcall done nil))))))))
+                  environment)
+                 latex-to-svg-backend--processes)
               (file-missing
                (latex-to-svg-backend--append-process-log
                 output-buffer
@@ -1111,6 +1135,28 @@ slot starts the oldest queued compile."
     (setq latex-to-svg-backend--running
           (delete key latex-to-svg-backend--running))
     (latex-to-svg-backend--fill-slots)))
+
+(defun latex-to-svg-backend--stop (key)
+  "Stop the compile of KEY, which no request waits for any more.
+A queued compile is taken off the queue.  A running one has the process
+of its stage killed, and the chain deletes its scratch directory (see
+`latex-to-svg-backend--run-process-chain'); its slot starts the next
+compile (see `latex-to-svg-backend--compile-done').  Nothing is
+recorded, so the next request for KEY compiles again.
+
+A compile that holds a slot but runs no process is in the sentinel that
+ends it, or starts its next stage: it is left to end, with no waiter
+to call."
+  (setq latex-to-svg-backend--queue
+        (seq-remove (lambda (job) (equal (car job) key))
+                    latex-to-svg-backend--queue))
+  (remhash key latex-to-svg-backend--pending)
+  (when-let* ((process (gethash key latex-to-svg-backend--processes)))
+    ;; First, as `delete-process' runs the sentinel, which finds the
+    ;; process missing and does not end the compile.
+    (remhash key latex-to-svg-backend--processes)
+    (delete-process process)
+    (latex-to-svg-backend--compile-done key)))
 
 (defun latex-to-svg-backend--report-failure (key latex engine &optional message)
   "Warn that ENGINE could not compile LATEX, whose content key is KEY.

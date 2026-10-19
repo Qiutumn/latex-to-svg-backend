@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `latex-to-svg-backend-cancel`: `(latex-to-svg-backend-cancel CALLBACK)`
+  cancels the request made with `CALLBACK`, for a front-end whose newer
+  request replaces an older one. `CALLBACK` is not called. A compile
+  that no other request waits for is stopped: a queued one is taken off
+  the queue, a running one has its process killed and its scratch
+  directory deleted, and its slot goes to the next compile. A stopped
+  compile records no failure.
+
 ### Changed
 
 - Each compile runs in a scratch directory under `tmp/` in the cache

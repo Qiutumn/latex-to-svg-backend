@@ -498,7 +498,8 @@ equation share one compile.
 
 CALLBACK is a function of one argument, OUTCOME.  It is called exactly
 once for every request that returned nil, except one that found the
-equation compiled with no X-HEIGHT, which calls nothing.  OUTCOME is:
+equation compiled with no X-HEIGHT, which calls nothing, and one
+cancelled with `latex-to-svg-backend-cancel'.  OUTCOME is:
 
   * nil when the SVG is in the cache: the caller re-queries (calls
     `latex-to-svg-backend' again, which now returns the image) and
@@ -595,6 +596,33 @@ Call within the target buffer: the engines read their options there (see
                         latex fallback metadata waiter inputs))))
                metadata engine inputs))
             nil))))))
+
+(defun latex-to-svg-backend-cancel (callback)
+  "Cancel the request made with CALLBACK: its outcome is not wanted.
+CALLBACK is the function passed as `:callback' to
+`latex-to-svg-backend', compared with `eq': the caller makes one
+closure per request and keeps it.  CALLBACK is not called, unless the
+request ended while `latex-to-svg-backend' ran: that call waits in a
+timer and still comes.  Return non-nil when a request was cancelled.
+
+A compile that no other request waits for is stopped: a queued one is
+taken off the queue, a running one has its process killed and its
+scratch directory deleted, and its slot goes to the next compile.  A
+request handed to FALLBACK is cancelled there.  A stopped compile
+records no failure, so a later request for the same LATEX compiles
+it again."
+  (let ((mine (lambda (waiter) (eq (plist-get waiter :callback) callback)))
+        keys)
+    (maphash (lambda (key waiters)
+               (when (seq-some mine waiters)
+                 (push key keys)))
+             latex-to-svg-backend--pending)
+    (dolist (key keys)
+      (if-let* ((others (seq-remove
+                         mine (gethash key latex-to-svg-backend--pending))))
+          (puthash key others latex-to-svg-backend--pending)
+        (latex-to-svg-backend--stop key)))
+    (and keys t)))
 
 ;;;###autoload
 (defun latex-to-svg-backend-invalidate (latex &optional engine)

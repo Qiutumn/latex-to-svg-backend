@@ -251,7 +251,7 @@ RaTeX emits no compile metadata, so no `.eld' sidecar is written."
                 (if inline (concat " " latex-to-svg-backend--ratex-strut) "")
                 "\n")))
     (latex-to-svg-backend--run-process-chain
-     dir output-buffer
+     key dir output-buffer
      (list
       (list 'ratex
             (append

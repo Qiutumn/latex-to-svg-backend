@@ -914,7 +914,7 @@ A theme change therefore re-tints from cache without recompiling."
                 (or (plist-get toolchain :suffix) "")
                 "\\end{document}\n")))
     (latex-to-svg-backend--run-process-chain
-     dir output-buffer
+     key dir output-buffer
      (cons (list 'latex
                  ;; TeX reads its command line as a line of input, and the
                  ;; name of the cache directory may hold characters TeX
