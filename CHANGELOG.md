@@ -61,8 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   session dumps the `.fmt` file again at the next compile. Before, only
   the binary was recorded, and it was checked once per session. The
   dump runs with `-recorder` to find these files. Every `.fmt` file is
-  dumped again once, since its stamp lacks them. On Debian, Fedora and
-  Arch the package hooks regenerate `ls-R`; this is not tested.
+  dumped again once, since its stamp lacks them. CI checks on Ubuntu
+  that installing a TeX package with apt makes the stamp stale; on
+  Fedora and Arch, whose package hooks regenerate `ls-R` too, this is
+  not tested.
 - Each compile runs in a scratch directory under `tmp/` in the cache
   directory, instead of `temporary-file-directory`, and moves its SVG
   into `svg/` with a rename. The cache key and the SVG are unchanged.
