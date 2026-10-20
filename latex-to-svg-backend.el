@@ -122,6 +122,13 @@
 (require 'latex-to-svg-backend-ratex)
 (require 'latex-to-svg-backend-texres)
 
+;;;; Version
+
+(defconst latex-to-svg-backend-version "0.16.0"
+  "The version of the loaded backend, as in the `Version:' header.
+A front-end compares it with `version<=' to check that the backend it
+loaded has what it needs.")
+
 ;;;; Engine
 
 (defun latex-to-svg-backend--engine (engine)

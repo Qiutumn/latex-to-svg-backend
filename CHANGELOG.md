@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `latex-to-svg-backend-version`, the version of the loaded backend, so
+  a front-end can check that the backend it loaded has what it needs.
+
 ## [0.16.0] - 2026-10-20
 
 A request whose outcome is no longer wanted can be cancelled, which

@@ -32,6 +32,27 @@
                                      (or load-file-name buffer-file-name))))
 
 (require 'latex-to-svg-backend)
+(require 'lisp-mnt)
+
+;;;; Version
+
+(ert-deftest latex-to-svg-backend-version-matches-the-header ()
+  ;; The constant a front-end reads is the `Version:' header, so a
+  ;; release that bumps one and not the other fails here.
+  (should (equal latex-to-svg-backend-version
+                 (lm-version (locate-library "latex-to-svg-backend.el" t)))))
+
+(ert-deftest latex-to-svg-backend-changelog-matches-the-header ()
+  ;; The CHANGELOG's newest version is the `Version:' header, so a
+  ;; release that bumps one and not the other fails here.
+  (let ((header (lm-version (locate-library "latex-to-svg-backend.el" t))))
+    (with-temp-buffer
+      (insert-file-contents
+       (expand-file-name "CHANGELOG.md"
+                         (file-name-directory
+                          (locate-library "latex-to-svg-backend.el" t))))
+      (should (re-search-forward "^## \\[\\([0-9.]+\\)\\]" nil t))
+      (should (equal header (match-string 1))))))
 
 ;;;; Cache key
 
