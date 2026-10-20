@@ -3445,6 +3445,25 @@ and one in a formula's own black.")
     (should (equal latex-to-svg-backend-preamble-macros "\\def\\a{a}")))
   (should (equal latex-to-svg-backend-preamble-packages "")))
 
+(ert-deftest latex-to-svg-backend-warns-of-an-obsolete-alias ()
+  ;; An alias set before the backend loaded is reported with what
+  ;; `make-obsolete-variable' recorded.  The check at load runs only when
+  ;; the file loads; this tests the warning.
+  (let (warnings)
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (_type message &rest _)
+                 (push message warnings))))
+      (latex-to-svg-backend--warn-obsolete-alias
+       'latex-to-svg-backend-appended-preamble)
+      (latex-to-svg-backend--warn-obsolete-alias
+       'latex-to-svg-backend-preamble-not-precompiled))
+    (should (equal (reverse warnings)
+                   '("`latex-to-svg-backend-appended-preamble' is obsolete \
+since 0.16.0; use `latex-to-svg-backend-preamble-packages' instead."
+                     "`latex-to-svg-backend-preamble-not-precompiled' is \
+obsolete since 0.16.0; use `latex-to-svg-backend-preamble-macros' \
+instead.")))))
+
 (ert-deftest latex-to-svg-backend-buffer-local-preamble-searches-the-project ()
   ;; A buffer-local `-preamble' or `-preamble-packages' starts the preamble
   ;; with the `\input@path' line, so the dump, which runs in the cache,

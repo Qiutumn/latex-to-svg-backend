@@ -69,6 +69,18 @@ without replacing this base."
   :type 'string
   :group 'latex-to-svg-backend-latex)
 
+;; Before the first alias on purpose: once an alias exists, setting it
+;; cannot be told from setting its option.
+(defconst latex-to-svg-backend--obsolete-aliases-set
+  (seq-filter (lambda (alias)
+                (or (boundp alias) (get alias 'saved-value)))
+              '(latex-to-svg-backend-appended-preamble
+                latex-to-svg-backend-preamble-not-precompiled))
+  "The obsolete aliases the user set before this file loaded.
+An alias bound, or saved by Customize, before this file defines it was
+set by the user's init file.  Once the alias exists, setting it cannot
+be told from setting its option: both are one variable.")
+
 (define-obsolete-variable-alias 'latex-to-svg-backend-appended-preamble
   'latex-to-svg-backend-preamble-packages "0.16.0")
 
@@ -1154,6 +1166,23 @@ A theme change therefore re-tints from cache without recompiling."
            (when (buffer-live-p output-buffer)
              (kill-buffer output-buffer))
            (funcall cleanup)))))))
+
+(defun latex-to-svg-backend--warn-obsolete-alias (alias)
+  "Warn that ALIAS, an obsolete alias, is set.
+The warning says what `make-obsolete-variable' recorded for ALIAS: the
+version and the option to set instead.  Emacs reports an obsolete
+variable only when it compiles the code that sets it, which an init
+file seldom is.  Called at load, where no buffer requested anything, so
+it does not go through `latex-to-svg-backend--warn'."
+  (pcase-let ((`(,current ,_ ,version) (get alias 'byte-obsolete-variable)))
+    (display-warning
+     'latex-to-svg-backend
+     (format "`%s' is obsolete since %s; use `%s' instead."
+             alias version current)
+     :warning)))
+
+(mapc #'latex-to-svg-backend--warn-obsolete-alias
+      latex-to-svg-backend--obsolete-aliases-set)
 
 (provide 'latex-to-svg-backend-latex)
 

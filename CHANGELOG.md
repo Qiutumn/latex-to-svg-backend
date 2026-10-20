@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The obsolete names `latex-to-svg-backend-appended-preamble` and
+  `latex-to-svg-backend-preamble-not-precompiled` show a warning when they
+  are set before the backend loads, as an init file does, naming the
+  option to set instead. Before, Emacs reported them only when it
+  compiled the code that set them, or in the echo area for a
+  `.dir-locals.el`.
+
 ## [0.16.1] - 2026-10-20
 
 ### Added
