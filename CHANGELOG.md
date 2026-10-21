@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `latex-to-svg-backend-preamble` is renamed
+  `latex-to-svg-backend-preamble-base`. It holds the document class and
+  base packages; `-preamble-packages` and `-preamble-macros` are appended
+  to it. The old name is an obsolete alias and still works, also from a
+  `.dir-locals.el`, and setting it before the backend loads shows a
+  warning.
+
 ## [0.16.2] - 2026-10-20
 
 ### Added

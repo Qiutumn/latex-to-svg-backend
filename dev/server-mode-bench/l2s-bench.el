@@ -162,8 +162,8 @@ That is `standalone' with `amsmath', `amssymb' and `xcolor': no appended
 preamble, no preamble left out of the `.fmt', no RaTeX macros.  The run
 is in a temporary buffer, so no buffer-local value applies."
   (with-temp-buffer
-    (let ((latex-to-svg-backend-preamble
-           (eval (car (get 'latex-to-svg-backend-preamble 'standard-value))))
+    (let ((latex-to-svg-backend-preamble-base
+           (eval (car (get 'latex-to-svg-backend-preamble-base 'standard-value))))
           (latex-to-svg-backend-appended-preamble "")
           (latex-to-svg-backend-preamble-not-precompiled "")
           (latex-to-svg-backend-ratex-macros ""))

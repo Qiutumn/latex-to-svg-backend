@@ -68,7 +68,7 @@
 (ert-deftest latex-to-svg-backend-cache-key-folds-in-preamble ()
   ;; Changing the preamble must invalidate the cache (different output).
   (let ((base (latex-to-svg-backend--cache-key "E=mc^2")))
-    (let ((latex-to-svg-backend-preamble "\\documentclass{minimal}"))
+    (let ((latex-to-svg-backend-preamble-base "\\documentclass{minimal}"))
       (should-not (equal base (latex-to-svg-backend--cache-key "E=mc^2"))))))
 
 (ert-deftest latex-to-svg-backend-cache-key-folds-in-preamble-packages ()
@@ -1123,7 +1123,8 @@ completion event."
   ;; Guards the `varwidth' invariant: the verbatim body must accept *display*
   ;; math (`\[...\]', `equation', `align'), not just inline `$...$'.  Plain
   ;; `standalone' errors with "Missing $ inserted" on display math, so a
-  ;; regression in `latex-to-svg-backend-preamble' would fail these real compiles.
+  ;; regression in `latex-to-svg-backend-preamble-base' would fail these
+  ;; real compiles.
   (skip-unless (latex-to-svg-backend-tools-available-p))
   (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-e2e" t)))
     (unwind-protect
@@ -1436,7 +1437,7 @@ kept for symmetry with the compile pipeline."
     (should (equal base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble))))
     (let ((latex-to-svg-backend-preamble-packages "\\usepackage{physics}"))
       (should-not (equal base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble)))))
-    (let ((latex-to-svg-backend-preamble "\\documentclass{minimal}"))
+    (let ((latex-to-svg-backend-preamble-base "\\documentclass{minimal}"))
       (should-not (equal base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble)))))
     (let ((latex-to-svg-backend-latex-program "xelatex"))
       (should-not (equal base (latex-to-svg-backend--format-key (latex-to-svg-backend--preamble)))))))
@@ -1444,21 +1445,21 @@ kept for symmetry with the compile pipeline."
 (ert-deftest latex-to-svg-backend-preamble-appends ()
   ;; The combined preamble is the base alone when nothing is appended, else
   ;; base + newline + appended (the exact text dumped and embedded).
-  (let ((latex-to-svg-backend-preamble "BASE")
+  (let ((latex-to-svg-backend-preamble-base "BASE")
         (latex-to-svg-backend-preamble-packages ""))
     (should (equal (latex-to-svg-backend--preamble) "BASE")))
-  (let ((latex-to-svg-backend-preamble "BASE")
+  (let ((latex-to-svg-backend-preamble-base "BASE")
         (latex-to-svg-backend-preamble-packages "EXTRA"))
     (should (equal (latex-to-svg-backend--preamble) "BASE\nEXTRA"))))
 
 (ert-deftest latex-to-svg-backend-preamble-appends-line-width ()
   ;; A non-nil `latex-to-svg-backend-line-width' appends a `\sa@width'
   ;; override (last, so it wins over the class default); nil appends nothing.
-  (let ((latex-to-svg-backend-preamble "BASE")
+  (let ((latex-to-svg-backend-preamble-base "BASE")
         (latex-to-svg-backend-preamble-packages "")
         (latex-to-svg-backend-line-width nil))
     (should (equal (latex-to-svg-backend--preamble) "BASE")))
-  (let ((latex-to-svg-backend-preamble "BASE")
+  (let ((latex-to-svg-backend-preamble-base "BASE")
         (latex-to-svg-backend-preamble-packages "EXTRA")
         (latex-to-svg-backend-line-width "18cm"))
     (should (equal (latex-to-svg-backend--preamble)
@@ -1752,7 +1753,7 @@ Return the SVG path."
   ;; marked safe, whatever else is.
   (dolist (v '(latex-to-svg-backend-latex-program
                latex-to-svg-backend-dvisvgm-program
-               latex-to-svg-backend-preamble
+               latex-to-svg-backend-preamble-base
                latex-to-svg-backend-preamble-packages
                latex-to-svg-backend-preamble-macros
                latex-to-svg-backend-cache-directory
@@ -1809,7 +1810,7 @@ Return the SVG path."
          (latex-key (latex-to-svg-backend--cache-key "$x$" 'latex))
          (ratex-key (latex-to-svg-backend--cache-key "$x$" 'ratex)))
     (should-not (equal latex-key ratex-key))
-    (let ((latex-to-svg-backend-preamble "\\documentclass{minimal}"))
+    (let ((latex-to-svg-backend-preamble-base "\\documentclass{minimal}"))
       (should (equal ratex-key (latex-to-svg-backend--cache-key "$x$" 'ratex))))
     (let ((latex-to-svg-backend-ratex-macros "\\def\\v{\\mathbf{v}}"))
       (should-not (equal ratex-key (latex-to-svg-backend--cache-key "$x$" 'ratex))))))
@@ -3432,8 +3433,20 @@ and one in a formula's own black.")
           (should (equal seen '(("/p/mine.sty" 1 . 1)))))))))
 
 (ert-deftest latex-to-svg-backend-old-preamble-names-still-work ()
-  ;; The names before 0.16.0 are obsolete aliases: a `.dir-locals.el'
-  ;; that sets one sets the new option in the buffer.
+  ;; The names before 0.16.0, and `-preamble' before 0.17.0, are obsolete
+  ;; aliases: a `.dir-locals.el' that sets one sets the new option in the
+  ;; buffer.
+  (latex-to-svg-backend-tests--outside-a-project
+    (with-temp-buffer
+      (setq default-directory "/tmp/a/")
+      (set (make-local-variable 'latex-to-svg-backend-preamble)
+           "\\documentclass{standalone}")
+      (should (local-variable-p 'latex-to-svg-backend-preamble-base))
+      (should (equal latex-to-svg-backend-preamble-base
+                     "\\documentclass{standalone}"))
+      (should (string-prefix-p
+               "\\makeatletter\\def\\input@path{{/tmp/a/}}\\makeatother\n"
+               (latex-to-svg-backend--preamble)))))
   (with-temp-buffer
     (set (make-local-variable 'latex-to-svg-backend-appended-preamble)
          "\\usepackage{physics}")
@@ -3454,18 +3467,22 @@ and one in a formula's own black.")
                (lambda (_type message &rest _)
                  (push message warnings))))
       (latex-to-svg-backend--warn-obsolete-alias
+       'latex-to-svg-backend-preamble)
+      (latex-to-svg-backend--warn-obsolete-alias
        'latex-to-svg-backend-appended-preamble)
       (latex-to-svg-backend--warn-obsolete-alias
        'latex-to-svg-backend-preamble-not-precompiled))
     (should (equal (reverse warnings)
-                   '("`latex-to-svg-backend-appended-preamble' is obsolete \
+                   '("`latex-to-svg-backend-preamble' is obsolete since \
+0.17.0; use `latex-to-svg-backend-preamble-base' instead."
+                     "`latex-to-svg-backend-appended-preamble' is obsolete \
 since 0.16.0; use `latex-to-svg-backend-preamble-packages' instead."
                      "`latex-to-svg-backend-preamble-not-precompiled' is \
 obsolete since 0.16.0; use `latex-to-svg-backend-preamble-macros' \
 instead.")))))
 
 (ert-deftest latex-to-svg-backend-buffer-local-preamble-searches-the-project ()
-  ;; A buffer-local `-preamble' or `-preamble-packages' starts the preamble
+  ;; A buffer-local `-preamble-base' or `-preamble-packages' starts the preamble
   ;; with the `\input@path' line, so the dump, which runs in the cache,
   ;; finds a relative `\input'; the directory is then part of the `.fmt'
   ;; key.  A global value writes no such line and shares one `.fmt' file.
@@ -3484,9 +3501,9 @@ instead.")))))
                                (latex-to-svg-backend--format-key
                                 (latex-to-svg-backend--preamble))))))
         (kill-local-variable 'latex-to-svg-backend-preamble-packages)
-        (setq-local latex-to-svg-backend-preamble "\\documentclass{standalone}")
+        (setq-local latex-to-svg-backend-preamble-base "\\documentclass{standalone}")
         (should (string-search "input@path" (latex-to-svg-backend--preamble)))
-        (kill-local-variable 'latex-to-svg-backend-preamble)
+        (kill-local-variable 'latex-to-svg-backend-preamble-base)
         (let ((default-directory "/tmp/b/"))
           (should (equal global (latex-to-svg-backend--preamble))))))))
 

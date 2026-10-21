@@ -50,42 +50,54 @@
   :type 'string
   :group 'latex-to-svg-backend-latex)
 
-(defcustom latex-to-svg-backend-preamble
-  "\\documentclass[varwidth,border=2pt]{standalone}
-\\usepackage{amsmath}
-\\usepackage{amssymb}
-\\usepackage{xcolor}"
-  "LaTeX preamble (everything before `\\begin{document}') for equations.
-The `standalone' class crops the page tightly to the equation, so
-no `preview' package is required.  The `varwidth' option is what lets
-the verbatim body use *display* math — `\\=\\[...\\=\\]' and display
-environments like `equation'/`align' — not just inline `$...$'
-\(plain `standalone' typesets its body as a single horizontal box and
-errors with \"Missing $ inserted\" on display math).  dvisvgm's
-`--exact-bbox' then crops to the actual ink.
-
-See also `latex-to-svg-backend-preamble-packages' for adding packages
-without replacing this base."
-  :type 'string
-  :group 'latex-to-svg-backend-latex)
-
 ;; Before the first alias on purpose: once an alias exists, setting it
 ;; cannot be told from setting its option.
 (defconst latex-to-svg-backend--obsolete-aliases-set
   (seq-filter (lambda (alias)
                 (or (boundp alias) (get alias 'saved-value)))
-              '(latex-to-svg-backend-appended-preamble
+              '(latex-to-svg-backend-preamble
+                latex-to-svg-backend-appended-preamble
                 latex-to-svg-backend-preamble-not-precompiled))
   "The obsolete aliases the user set before this file loaded.
 An alias bound, or saved by Customize, before this file defines it was
 set by the user's init file.  Once the alias exists, setting it cannot
 be told from setting its option: both are one variable.")
 
+(define-obsolete-variable-alias 'latex-to-svg-backend-preamble
+  'latex-to-svg-backend-preamble-base "0.17.0")
+
+(defcustom latex-to-svg-backend-preamble-base
+  "\\documentclass[varwidth,border=2pt]{standalone}
+\\usepackage{amsmath}
+\\usepackage{amssymb}
+\\usepackage{xcolor}"
+  "LaTeX preamble base (the document class and base packages).
+`latex-to-svg-backend-preamble-packages' is appended to it, and
+`latex-to-svg-backend-preamble-macros' is written after both, before
+each compile.  To add packages, set
+`latex-to-svg-backend-preamble-packages' and leave this option alone.
+Set this option only to change the class options or to remove a base
+package that conflicts with one you add.
+
+The `standalone' class crops the page tightly to the equation, so
+no `preview' package is required.  dvisvgm's `--exact-bbox' then crops
+to the actual ink.  A replacement must keep:
+- the `varwidth' option, which lets the verbatim body use *display*
+  math (`\\=\\[...\\=\\]', `equation', `align'): plain `standalone'
+  typesets its body as a single horizontal box and errors with
+  \"Missing $ inserted\" on display math;
+- `xcolor', for the texres engine: it writes `\\color[RGB]{1,2,3}'
+  before the equation and turns that color into `currentColor', so a
+  formula's own `\\color{black}' stays black; without `xcolor', black
+  becomes `currentColor'."
+  :type 'string
+  :group 'latex-to-svg-backend-latex)
+
 (define-obsolete-variable-alias 'latex-to-svg-backend-appended-preamble
   'latex-to-svg-backend-preamble-packages "0.16.0")
 
 (defcustom latex-to-svg-backend-preamble-packages ""
-  "LaTeX code for packages, appended to `latex-to-svg-backend-preamble'.
+  "LaTeX code for packages, appended to `latex-to-svg-backend-preamble-base'.
 For LaTeX packages, including your own `.sty' files, which rarely
 change: `\\usepackage{physics}', say.  They are dumped into the `.fmt'
 file (see `latex-to-svg-backend-precompile') and read once.  Changing
@@ -189,7 +201,7 @@ The value is folded into the cache key, so changing it re-renders."
 (defcustom latex-to-svg-backend-precompile t
   "When non-nil, precompile the preamble to a LaTeX `.fmt' file.
 
-The class and packages in `latex-to-svg-backend-preamble' /
+The class and packages in `latex-to-svg-backend-preamble-base' /
 `latex-to-svg-backend-preamble-packages' are dumped once, with TeX's
 `\\dump', to a `.fmt' file keyed by the preamble text; every equation
 compile then loads it with a `%&' first line instead of re-reading the
@@ -263,7 +275,7 @@ compile, and the text dumped into the precompiled `.fmt' file.  When
 `latex-to-svg-backend-line-width' is set, a `\\sa@width' override is
 appended so the `varwidth' box uses that width (see that variable).
 
-When `latex-to-svg-backend-preamble' or
+When `latex-to-svg-backend-preamble-base' or
 `latex-to-svg-backend-preamble-packages' has a buffer-local value, the
 text starts with the line of `latex-to-svg-backend--input-path', so a
 relative `\\input' in it finds its file: the dump runs in the cache.
@@ -271,10 +283,10 @@ The directory is then part of the text, so two projects with the same
 `\\input{macros.tex}' get two `.fmt' files; without a buffer-local value
 everyone shares one."
   (concat
-   (when (or (local-variable-p 'latex-to-svg-backend-preamble)
+   (when (or (local-variable-p 'latex-to-svg-backend-preamble-base)
              (local-variable-p 'latex-to-svg-backend-preamble-packages))
      (latex-to-svg-backend--input-path))
-   latex-to-svg-backend-preamble
+   latex-to-svg-backend-preamble-base
    (unless (string-empty-p latex-to-svg-backend-preamble-packages)
      (concat "\n" latex-to-svg-backend-preamble-packages))
    ;; Override `standalone's varwidth width (`\sa@width', default

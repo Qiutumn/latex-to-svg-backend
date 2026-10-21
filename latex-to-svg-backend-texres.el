@@ -47,7 +47,7 @@
   "Program of texres, the TeX distribution the texres engine runs.
 The engine runs it as `pdflatex' (see `latex-to-svg-backend--texres-link').
 The preamble options of the LaTeX engine apply, starting with
-`latex-to-svg-backend-preamble'."
+`latex-to-svg-backend-preamble-base'."
   :type 'string
   :group 'latex-to-svg-backend-texres)
 

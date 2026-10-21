@@ -135,7 +135,7 @@ To use texres, install it (see its README; on macOS `brew install leoliu0/texres
 
 What changes with texres, from texres 0.7.7:
 
-- **The same LaTeX.** `latex-to-svg-backend-preamble`, `-preamble-packages`, `-preamble-macros`, `-line-width`, `-precompile` and `-metadata-prefix` apply as for the LaTeX engine, and compile metadata works. texres dumps its own `.fmt` file, next to the LaTeX engine's.
+- **The same LaTeX.** `latex-to-svg-backend-preamble-base`, `-preamble-packages`, `-preamble-macros`, `-line-width`, `-precompile` and `-metadata-prefix` apply as for the LaTeX engine, and compile metadata works. texres dumps its own `.fmt` file, next to the LaTeX engine's.
 - **A link named `pdflatex`.** texres runs one `pdflatex` pass only when it is called by that name, so the backend makes a symbolic link to it in the `texres/` subdirectory of the cache. Nothing on `exec-path` is shadowed.
 - **PDF, then SVG.** texres writes PDF, which `pdftocairo -svg -noshrink` converts; the backend crops the SVG to the ink, as `dvisvgm --exact-bbox` does. A rule that ends the ink (a fraction bar, the bar of a root) leaves the box 0.2pt wider on each side than with `dvisvgm`.
 - **The ink.** The backend writes `\color[RGB]{1,2,3}` before the equation and turns that color into `currentColor`, so a formula's own `\color{black}` stays black. This needs `xcolor`, which the default preamble loads; without it, black becomes `currentColor`.
@@ -322,7 +322,7 @@ For an equation you *don't* want to track, do nothing extra: call `(latex-to-svg
 | --- | --- | --- |
 | `-cache-directory` | `-latex-program` | `-ratex-program` |
 | `-cache-max-age` | `-dvisvgm-program` | `-ratex-macros` |
-| `-gc-interval` | `-preamble` | |
+| `-gc-interval` | `-preamble-base` | |
 | `-font-scale` | `-preamble-packages` | |
 | `-jobs` | `-preamble-macros` | |
 | | `-preamble-package-files` | |
@@ -342,8 +342,8 @@ The functions under [API](#api) work with all three; `latex-to-svg-backend-metad
 | --- | --- | --- |
 | `latex-to-svg-backend-latex-program` | `"latex"` | the `latex` binary |
 | `latex-to-svg-backend-dvisvgm-program` | `"dvisvgm"` | the `dvisvgm` binary |
-| `latex-to-svg-backend-preamble` | `standalone[varwidth]` + `amsmath`/`xcolor` | the document class and base packages |
-| `latex-to-svg-backend-preamble-packages` | `""` | packages appended to the base, dumped into the `.fmt` file — see [A project's preamble](#a-projects-preamble) |
+| `latex-to-svg-backend-preamble-base` | `standalone[varwidth]` + `amsmath`/`xcolor` | the document class and base packages |
+| `latex-to-svg-backend-preamble-packages` | `""` | packages appended to `-preamble-base`, dumped into the `.fmt` file — see [A project's preamble](#a-projects-preamble) |
 | `latex-to-svg-backend-preamble-macros` | `""` | a few macros of your own, read at every compile — see [A project's preamble](#a-projects-preamble) |
 | `latex-to-svg-backend-preamble-package-files` | `nil` | files `-preamble-packages` loads, whose edits dump the `.fmt` file again and compile the equations again — see [A project's preamble](#a-projects-preamble) |
 | `latex-to-svg-backend-preamble-macro-files` | `nil` | files `-preamble-macros` loads, whose edits compile the equations again — see [A project's preamble](#a-projects-preamble) |
@@ -369,6 +369,8 @@ A LaTeX project usually defines its own macros (`\newcommand`, `\DeclareMathOper
 | `latex-to-svg-backend-preamble-packages` | LaTeX packages, including your own `.sty` files, which rarely change | dumped into a `.fmt` file of the project and read once; changing them dumps the whole `.fmt` file again |
 | `latex-to-svg-backend-preamble-macros` | a few macros of your own that you change often | read at every compile; an edit dumps nothing |
 
+`latex-to-svg-backend-preamble-base` holds the document class and base packages, and the two options above are appended to it. A project sets it only to change the class options or to remove a base package that conflicts with one it adds (`newtxmath` and `amssymb` both define `\Bbbk`).
+
 The `.fmt` file of the project is deleted by `latex-to-svg-backend-gc` once it is unused. A macros file that rarely changes can go in `-preamble-packages` too, where it is read once. For example:
 
 ```elisp
@@ -377,7 +379,7 @@ The `.fmt` file of the project is deleted by `latex-to-svg-backend-gc` once it i
          (latex-to-svg-backend-preamble-macro-files . ("macros.tex")))))
 ```
 
-The names before 0.16.0, `latex-to-svg-backend-appended-preamble` and `latex-to-svg-backend-preamble-not-precompiled`, are obsolete aliases of these two and still work.
+The names before 0.16.0, `latex-to-svg-backend-appended-preamble` and `latex-to-svg-backend-preamble-not-precompiled`, are obsolete aliases of these two and still work. `latex-to-svg-backend-preamble` is an obsolete alias of `latex-to-svg-backend-preamble-base` since 0.17.0.
 
 Every backslash is doubled, as in any Elisp string. `\input` looks for the file in the project root (`project-root`), or in `default-directory` outside a project, from either option: the backend writes `\makeatletter\def\input@path{{/path/to/project/}}\makeatother` before the text. A file below the root is named relative to it, as in `\input{paper/macros.tex}`. A value that defines `\input@path` itself replaces the backend's; to search one more directory, append to it instead:
 
@@ -396,7 +398,7 @@ Names are relative to the project root, as for `\input`, or absolute. The modifi
 
 A file that is not listed is not followed: the cache key covers the options' text and the directory, not the contents of the files they load, and a `.fmt` file holds those contents as they were at the dump. After editing such a file, `C-u M-x latex-to-svg-frontend-refresh` deletes the buffer's `.fmt` file (`latex-to-svg-backend-invalidate-format`) and compiles its equations again. It does this for the current buffer only; other open files of the project need their own.
 
-- The directory is part of the cache key, and of the `.fmt` file's key when `-preamble` or `-preamble-packages` is set per buffer, so two projects with the same `\input{macros.tex}` share neither SVGs nor `.fmt` files. A buffer with no buffer-local preamble uses the one `.fmt` file everyone shares.
+- The directory is part of the cache key, and of the `.fmt` file's key when `-preamble-base` or `-preamble-packages` is set per buffer, so two projects with the same `\input{macros.tex}` share neither SVGs nor `.fmt` files. A buffer with no buffer-local preamble uses the one `.fmt` file everyone shares.
 - A directory holding one of `\ { } % # ~`, or a remote one (the compile runs locally), gets no `\input@path` and is reported once per buffer.
 - Neither preamble option has a `:safe` predicate, as both are LaTeX code: Emacs asks
   before applying them from a `.dir-locals.el`, and answering `!` trusts only
@@ -503,7 +505,8 @@ RaTeX's output, which names the command it could not parse (see
 A failure caused by the formula is recorded, and the equation is not compiled
 again (see [Failed compiles](#failed-compiles-and-the-fallback-engine)).
 Anything that changes the cache key retries on its own: editing the equation,
-`latex-to-svg-backend-preamble`, `latex-to-svg-backend-preamble-packages`,
+`latex-to-svg-backend-preamble-base`,
+`latex-to-svg-backend-preamble-packages`,
 `latex-to-svg-backend-preamble-macros`, `latex-to-svg-backend-line-width`,
 `latex-to-svg-backend-ratex-macros`, or a file listed in
 `latex-to-svg-backend-preamble-package-files` or
