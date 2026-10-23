@@ -253,6 +253,7 @@ See `latex-to-svg-backend--format-stamp'.")
 (defvar latex-to-svg-backend--format-programs
   (list (lambda () latex-to-svg-backend-latex-program))
   "Functions returning the TeX programs that dump a `.fmt' file.
+A program is as for `latex-to-svg-backend--tex-command'.
 Each `.fmt' file is keyed by its program (see
 `latex-to-svg-backend--format-key'), so
 `latex-to-svg-backend-invalidate-format' deletes one per program.  An
@@ -433,12 +434,22 @@ the key as it was before the option existed."
 ;; to embedding the full preamble in each equation, so a `.fmt' file is a
 ;; pure performance optimization, never a correctness dependency.
 
+(defun latex-to-svg-backend--tex-command (&optional program)
+  "Return the TeX PROGRAM as a list of the program and its first arguments.
+PROGRAM is a program name or such a list, nil meaning
+`latex-to-svg-backend-latex-program'.  The arguments come before those
+of the compile and of the dump of the `.fmt' file."
+  (if (consp program)
+      program
+    (list (or program latex-to-svg-backend-latex-program))))
+
 (defun latex-to-svg-backend--latex-binary (&optional program)
   "Return the path to the LaTeX executable, or nil.
-PROGRAM is the TeX program, by default `latex-to-svg-backend-latex-program'.
+PROGRAM is the TeX program (see `latex-to-svg-backend--tex-command').
 Honours an absolute PROGRAM, else resolves the command name on variable
 `exec-path'.  Used for the freshness check of the `.fmt' file."
-  (let ((prog (car (split-string (or program latex-to-svg-backend-latex-program)))))
+  (let ((prog (car (split-string
+                    (car (latex-to-svg-backend--tex-command program))))))
     (if (file-name-absolute-p prog)
         (and (file-executable-p prog) prog)
       (executable-find prog))))
@@ -446,15 +457,20 @@ Honours an absolute PROGRAM, else resolves the command name on variable
 (defun latex-to-svg-backend--latex-format-name (&optional program)
   "Return the name of the LaTeX `.fmt' file the dump starts from.
 That is the `&NAME' of the `-ini' run, e.g. \"latex\" for `latex.fmt':
-the name of PROGRAM, by default `latex-to-svg-backend-latex-program'."
-  (file-name-nondirectory
-   (car (split-string (or program latex-to-svg-backend-latex-program)))))
+the name of PROGRAM (see `latex-to-svg-backend--tex-command'), or, as
+in TeX, the NAME of a `-progname=NAME' argument of PROGRAM."
+  (let ((command (latex-to-svg-backend--tex-command program)))
+    (or (seq-some (lambda (arg)
+                    (and (string-match "\\`-progname=\\(.+\\)" arg)
+                         (match-string 1 arg)))
+                  (cdr command))
+        (file-name-nondirectory (car (split-string (car command)))))))
 
 (defun latex-to-svg-backend--format-key (preamble &optional program)
   "Return the cache key naming the precompiled `.fmt' file of PREAMBLE.
 PREAMBLE is the text of `latex-to-svg-backend--preamble'.  Folds in
-PREAMBLE and the TeX PROGRAM that dumps it, by default
-`latex-to-svg-backend-latex-program', so any change to either yields a
+PREAMBLE and the TeX PROGRAM that dumps it (see
+`latex-to-svg-backend--tex-command'), so any change to either yields a
 distinct `.fmt' file (and a dump on the next render)."
   (secure-hash 'sha1 (format "%s\0%s"
                              preamble
@@ -657,8 +673,8 @@ one is in use.  %s"
   "Dump PREAMBLE to the `.fmt' file for FKEY, synchronously.
 Return the `.fmt' path on success, nil on failure.  Writes PREAMBLE
 followed by TeX's `\\dump' to a scratch `.tex' in the `fmt/'
-subdirectory and runs the TeX PROGRAM on it in `-ini' mode (by default
-`latex-to-svg-backend-latex-program'), which writes
+subdirectory and runs the TeX PROGRAM on it in `-ini' mode (see
+`latex-to-svg-backend--tex-command'), which writes
 `<cache>/fmt/FKEY.fmt'.  The build log is in
 the `*latex-to-svg-backend-precompile-log*' buffer for inspection.
 TeX's `-recorder' lists the files the dump read, from which the stamp
@@ -686,18 +702,21 @@ cannot be started is reported once per buffer (see
       (with-temp-file pre-tex
         (insert preamble "\n\\dump\n")))
     (message "latex-to-svg-backend: precompiling LaTeX preamble...")
-    (let* ((tex (or program latex-to-svg-backend-latex-program))
+    (let* ((command (latex-to-svg-backend--tex-command program))
+           (tex (car command))
            (rv (unwind-protect
                    (condition-case err
-                       (call-process tex
-                                     nil buffer nil
-                                     (concat "-output-directory=" dir)
+                       (apply #'call-process tex
+                              nil buffer nil
+                              (append
+                               (cdr command)
+                               (list (concat "-output-directory=" dir)
                                      "-ini"
                                      "-recorder"
                                      (concat "-jobname=" fkey)
                                      (concat "&" (latex-to-svg-backend--latex-format-name
                                                   program))
-                                     pre-tex)
+                                     pre-tex)))
                      (file-missing (signal (car err) (cdr err)))
                      ;; Found but cannot be started.  Report it; the
                      ;; caller falls back to a full compile, which reports
@@ -733,8 +752,8 @@ M-x customize-group RET latex-to-svg-backend."
                                                     package-files)
   "Return the path of a fresh precompiled `.fmt' file of PREAMBLE, or nil.
 PREAMBLE is the text of `latex-to-svg-backend--preamble'; PROGRAM is
-the TeX program that dumps and loads it, by default
-`latex-to-svg-backend-latex-program'; PACKAGE-FILES are the stamps of
+the TeX program that dumps and loads it (see
+`latex-to-svg-backend--tex-command'); PACKAGE-FILES are the stamps of
 `latex-to-svg-backend-preamble-package-files' (see
 `latex-to-svg-backend--preamble-files').  Dumps the `.fmt' file on first
 use (synchronously) and caches it on disk.  Before each use it checks
@@ -999,7 +1018,7 @@ A toolchain is the plist `latex-to-svg-backend--compile' runs:
 
   :engine   the engine, for the failure report (see
             `latex-to-svg-backend--compile-failed');
-  :program  the TeX program, nil meaning `latex-to-svg-backend-latex-program';
+  :program  the TeX program (see `latex-to-svg-backend--tex-command');
   :output   the file the TeX program writes in the scratch directory;
   :prefix   text written after `\\begin{document}', before the equation;
   :suffix   text written after the equation, before `\\end{document}';
@@ -1077,8 +1096,8 @@ No color is baked in: the equation's default ink becomes the literal
 caller's `:color' at display time (`latex-to-svg-backend--load-svg-image').
 A theme change therefore re-tints from cache without recompiling."
   (let* ((toolchain (or toolchain (latex-to-svg-backend--latex-toolchain)))
-         (program (or (plist-get toolchain :program)
-                      latex-to-svg-backend-latex-program))
+         (command (latex-to-svg-backend--tex-command
+                   (plist-get toolchain :program)))
          (store (plist-get toolchain :store))
          (dir (latex-to-svg-backend--scratch-dir))
          (tex (expand-file-name "equation.tex" dir))
@@ -1137,10 +1156,10 @@ A theme change therefore re-tints from cache without recompiling."
                  ;; TeX reads its command line as a line of input, and the
                  ;; name of the cache directory may hold characters TeX
                  ;; reads as code: name the file in DIR, where TeX runs.
-                 (list program
-                       "-interaction=nonstopmode"
-                       "-halt-on-error"
-                       "equation.tex")
+                 (append command
+                         (list "-interaction=nonstopmode"
+                               "-halt-on-error"
+                               "equation.tex"))
                  output
                  latex-to-svg-backend--latex-environment)
            (funcall (plist-get toolchain :convert) dir output))

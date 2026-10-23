@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The texres engine runs `texres -progname=pdflatex`, which texres
+  0.7.8 accepts, instead of a symbolic link named `pdflatex` to texres
+  in the `texres/` subdirectory of the cache. The backend reads the
+  version from `texres --version`, once per session and again after
+  texres changes. The `.fmt` file of texres is dumped once more, since
+  its key names the program.
+
+### Deprecated
+
+- texres 0.7.7 and older, which run one `pdflatex` pass only when
+  called by that name. The backend still runs them through the link,
+  and warns once per buffer to install texres 0.7.8 or later. The
+  support is removed in a release after 2027-04-23.
+
 ## [0.17.0] - 2026-10-21
 
 ### Changed

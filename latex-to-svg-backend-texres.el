@@ -45,7 +45,7 @@
 
 (defcustom latex-to-svg-backend-texres-program "texres"
   "Program of texres, the TeX distribution the texres engine runs.
-The engine runs it as `pdflatex' (see `latex-to-svg-backend--texres-link').
+The engine runs it as `pdflatex' (see `latex-to-svg-backend--texres-command').
 The preamble options of the LaTeX engine apply, starting with
 `latex-to-svg-backend-preamble-base'."
   :type 'string
@@ -59,15 +59,76 @@ This is `pdftocairo' from Poppler <https://poppler.freedesktop.org>."
 
 ;;;; Capability
 
+(defconst latex-to-svg-backend--texres-progname-version "0.7.8"
+  "The first texres version that takes `-progname=pdflatex'.
+An older texres runs one `pdflatex' pass only when called by that name
+\(see `latex-to-svg-backend--texres-link').")
+
+(defvar latex-to-svg-backend--texres-versions (make-hash-table :test 'equal)
+  "Map of a texres binary to (MTIME . VERSION), read once per session.
+See `latex-to-svg-backend--texres-version'.")
+
+(defun latex-to-svg-backend--texres-version (texres)
+  "Return the version of the texres at TEXRES, a string, or nil.
+TEXRES is the file name `executable-find' returned.  The version is
+read from `texres --version' (\"texres 0.7.7 (Rust TeX engine)\") once
+per session for each binary and modification time, so an upgrade
+during the session is noticed.  Nil when the output has no version.
+Nil, and nothing kept, when texres cannot be run: its compile then
+fails and reports it."
+  (let* ((binary (file-chase-links texres))
+         (mtime (file-attribute-modification-time (file-attributes binary)))
+         (cached (gethash binary latex-to-svg-backend--texres-versions)))
+    (if (and cached (equal (car cached) mtime))
+        (cdr cached)
+      (with-temp-buffer
+        (when-let* ((exit (condition-case nil
+                              (call-process texres nil t nil "--version")
+                            (file-error nil))))
+          (let ((version (and (eql exit 0)
+                              (progn
+                                (goto-char (point-min))
+                                (looking-at "texres \\([0-9]+\\(?:\\.[0-9]+\\)*\\)"))
+                              (match-string 1))))
+            (puthash binary (cons mtime version)
+                     latex-to-svg-backend--texres-versions)
+            version))))))
+
+(defun latex-to-svg-backend--texres-command ()
+  "Return the TeX command that runs texres as `pdflatex', or nil.
+That is texres with `-progname=pdflatex' (see
+`latex-to-svg-backend--tex-command').  A texres before
+`latex-to-svg-backend--texres-progname-version' does not take the
+argument: it is run through `latex-to-svg-backend--texres-link', and a
+warning asks for a newer texres, once per buffer.  A texres whose
+version is not known takes the argument.  Nil when texres is not found
+or the link cannot be made."
+  (when-let* ((texres (executable-find latex-to-svg-backend-texres-program)))
+    (let ((version (latex-to-svg-backend--texres-version texres)))
+      (if (and version
+               (version< version
+                         latex-to-svg-backend--texres-progname-version))
+          (progn
+            (latex-to-svg-backend--warn
+             "texres before progname"
+             (format "texres %s runs one pdflatex pass only through a link \
+named pdflatex, which the backend makes in its cache.
+Install texres %s or later: support for older versions will be removed \
+in a release after 2027-04-23."
+                     version latex-to-svg-backend--texres-progname-version))
+            (latex-to-svg-backend--texres-link))
+        (list texres "-progname=pdflatex")))))
+
 (defun latex-to-svg-backend--texres-link ()
   "Return a link named `pdflatex' to texres, creating it, or nil.
-texres runs one `pdflatex' pass only when called by that name.  The
+A texres before `latex-to-svg-backend--texres-progname-version' runs
+one `pdflatex' pass only when called by that name.  The
 link is in the `texres/' subdirectory of the cache, so it shadows no
 `pdflatex' on the variable `exec-path'.  Nil when texres is not found,
 or when the link cannot be made, which is reported once per buffer
 \(see `latex-to-svg-backend--warn').
 
-A stopgap until texres can be told the program name without a link."
+Obsolete: to be removed with the support for texres 0.7.7 and older."
   (when-let* ((texres (executable-find latex-to-svg-backend-texres-program)))
     (let ((link (expand-file-name "pdflatex"
                                   (latex-to-svg-backend--subdir "texres")))
@@ -86,13 +147,13 @@ Developer Mode."
       (and (equal (file-symlink-p link) target) link))))
 
 (add-to-list 'latex-to-svg-backend--format-programs
-             #'latex-to-svg-backend--texres-link t)
+             #'latex-to-svg-backend--texres-command t)
 
 (defun latex-to-svg-backend--texres-tools-available-p ()
   "Return non-nil when texres and `pdftocairo' are found.
-texres is looked up through `latex-to-svg-backend--texres-link'."
+texres is looked up through `latex-to-svg-backend--texres-command'."
   (and (executable-find latex-to-svg-backend-pdftocairo-program)
-       (latex-to-svg-backend--texres-link)))
+       (latex-to-svg-backend--texres-command)))
 
 ;;;; Cache key
 
@@ -209,12 +270,13 @@ non-nil on success, nil when the output has no SVG root element."
 That is texres's `pdflatex', then `pdftocairo -svg -noshrink' (see
 `latex-to-svg-backend--latex-toolchain' for the plist).  Without
 `-noshrink', `pdftocairo' scales a small page's content down by a
-few percent.  When there is no link (see
-`latex-to-svg-backend--texres-link'), texres is run by its own name,
-so a texres that is not found fails to start, as any missing program
-does (see `latex-to-svg-backend--compile-failed')."
+few percent.  When texres is not found, or the link an old texres
+needs cannot be made (see `latex-to-svg-backend--texres-command'),
+texres is run by its own name, so a texres that is not found fails to
+start, as any missing program does (see
+`latex-to-svg-backend--compile-failed')."
   (list :engine 'texres
-        :program (or (latex-to-svg-backend--texres-link)
+        :program (or (latex-to-svg-backend--texres-command)
                      latex-to-svg-backend-texres-program)
         :output "equation.pdf"
         :prefix latex-to-svg-backend--texres-ink

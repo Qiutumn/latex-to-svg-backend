@@ -63,7 +63,7 @@ Equation numbering used to be the gap: the AUCTeX-based packages compile a whole
 - The programs of one of the three [engines](#engines) on `exec-path`:
   - LaTeX (the default): `latex` and `dvisvgm` 3.1 or later, from any TeX distribution (TeX Live 2024 or later ships it). dvisvgm 3.1 added `--currentcolor`, which makes the SVG color-independent.
   - RaTeX: its `render-svg` program, v0.1.14 or later. No TeX installation. What [Engines](#engines) says about RaTeX was checked with v0.1.14.
-  - texres: `texres` 0.7.7 or later, and `pdftocairo` from Poppler. No TeX Live installation. texres 0.7.7 fixed the dump of the `.fmt` file; with an older texres every equation compiles with the full preamble.
+  - texres: `texres` 0.7.8 or later, and `pdftocairo` from Poppler. No TeX Live installation.
 
   When a program of the requested engine is not found, the backend warns once per buffer, naming the engine and the program, and the request returns `nil`. Nothing is recorded: the next request runs the program again, so an equation compiles once the program is installed.
 
@@ -133,10 +133,10 @@ What changes with RaTeX, from RaTeX v0.1.14:
 
 To use texres, install it (see its README; on macOS `brew install leoliu0/texres/texres`) and Poppler, which provides `pdftocairo`, or set `latex-to-svg-backend-texres-program` and `latex-to-svg-backend-pdftocairo-program` to their paths. A front-end then passes `:engine 'texres`.
 
-What changes with texres, from texres 0.7.7:
+What changes with texres:
 
 - **The same LaTeX.** `latex-to-svg-backend-preamble-base`, `-preamble-packages`, `-preamble-macros`, `-line-width`, `-precompile` and `-metadata-prefix` apply as for the LaTeX engine, and compile metadata works. texres dumps its own `.fmt` file, next to the LaTeX engine's.
-- **A link named `pdflatex`.** texres runs one `pdflatex` pass only when it is called by that name, so the backend makes a symbolic link to it in the `texres/` subdirectory of the cache. Nothing on `exec-path` is shadowed.
+- **One `pdflatex` pass.** The backend runs `texres -progname=pdflatex`, which runs one `pdflatex` pass, without texres's latexmk-style driver.
 - **PDF, then SVG.** texres writes PDF, which `pdftocairo -svg -noshrink` converts; the backend crops the SVG to the ink, as `dvisvgm --exact-bbox` does. A rule that ends the ink (a fraction bar, the bar of a root) leaves the box 0.2pt wider on each side than with `dvisvgm`.
 - **The ink.** The backend writes `\color[RGB]{1,2,3}` before the equation and turns that color into `currentColor`, so a formula's own `\color{black}` stays black. This needs `xcolor`, which the default preamble loads; without it, black becomes `currentColor`.
 - **Speed.** Measured with the batch command under [Benchmark](#benchmark), a new equation compiled in 86–91 ms instead of LaTeX's 323–367 ms (medians), and the 20 equations queued at once in 402–460 ms instead of 1522–1700 ms.

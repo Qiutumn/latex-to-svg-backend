@@ -2389,6 +2389,91 @@ NEWEST is a function returning the most recently started fake process."
     (should (equal (plist-get (latex-to-svg-backend--texres-toolchain) :program)
                    "l2s-no-such-texres"))))
 
+(defmacro latex-to-svg-backend-tests--with-fake-texres (&rest body)
+  "Run BODY with `texres', the name of a fake texres in an empty cache.
+BODY writes it (see `latex-to-svg-backend-tests--write-texres').  No
+version is read yet; warnings are collected in `warnings'."
+  (declare (indent 0) (debug t))
+  `(let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-texres" t))
+          (latex-to-svg-backend--texres-versions (make-hash-table :test 'equal))
+          (texres (expand-file-name "fake-texres" latex-to-svg-backend-cache-directory))
+          (latex-to-svg-backend-texres-program texres)
+          (warnings nil))
+     (unwind-protect
+         (cl-letf (((symbol-function 'display-warning)
+                    (lambda (&rest w) (push w warnings))))
+           (with-temp-buffer
+             ,@body))
+       (delete-directory latex-to-svg-backend-cache-directory t))))
+
+(defun latex-to-svg-backend-tests--write-texres (file output)
+  "Write FILE, an executable script that prints OUTPUT."
+  (with-temp-file file
+    (insert "#!/bin/sh\nprintf '%s\\n' '" output "'\n"))
+  (set-file-modes file #o755))
+
+(ert-deftest latex-to-svg-backend-texres-command-by-version ()
+  ;; From 0.7.8 texres takes `-progname=pdflatex'; 0.7.7 runs through the
+  ;; link and warns once per buffer; an unknown version takes the argument.
+  (skip-unless (executable-find "sh"))
+  (latex-to-svg-backend-tests--with-fake-texres
+    (latex-to-svg-backend-tests--write-texres texres "texres 0.7.8 (Rust TeX engine)")
+    (should (equal (latex-to-svg-backend--texres-command)
+                   (list texres "-progname=pdflatex")))
+    (should-not warnings)
+    (clrhash latex-to-svg-backend--texres-versions)
+    (latex-to-svg-backend-tests--write-texres texres "texres 0.7.7 (Rust TeX engine)")
+    (let ((link (expand-file-name "texres/pdflatex"
+                                  latex-to-svg-backend-cache-directory)))
+      (should (equal (latex-to-svg-backend--texres-command) link))
+      (should (equal (latex-to-svg-backend--texres-command) link)))
+    (should (= (length warnings) 1))
+    (should (string-search "Install texres 0.7.8 or later" (cadr (car warnings))))
+    (clrhash latex-to-svg-backend--texres-versions)
+    (latex-to-svg-backend-tests--write-texres texres "something else")
+    (should (equal (latex-to-svg-backend--texres-command)
+                   (list texres "-progname=pdflatex")))))
+
+(ert-deftest latex-to-svg-backend-texres-version-is-read-again-after-an-upgrade ()
+  ;; The version is read once per binary; a new modification time, as
+  ;; after an upgrade, reads it again.
+  (skip-unless (executable-find "sh"))
+  (latex-to-svg-backend-tests--with-fake-texres
+    (latex-to-svg-backend-tests--write-texres texres "texres 0.7.7 (Rust TeX engine)")
+    (set-file-times texres (seconds-to-time 1000000000))
+    (should (equal (latex-to-svg-backend--texres-version texres) "0.7.7"))
+    (latex-to-svg-backend-tests--write-texres texres "texres 0.7.8 (Rust TeX engine)")
+    (set-file-times texres (seconds-to-time 1000000000))
+    (should (equal (latex-to-svg-backend--texres-version texres) "0.7.7"))
+    (set-file-times texres)
+    (should (equal (latex-to-svg-backend--texres-version texres) "0.7.8"))))
+
+(ert-deftest latex-to-svg-backend-texres-version-unknown-when-it-cannot-run ()
+  ;; A texres that cannot be run has no version, and none is kept, so it
+  ;; is read again once texres runs.
+  (latex-to-svg-backend-tests--with-fake-texres
+    (with-temp-file texres (insert "not run"))
+    (set-file-modes texres #o644)
+    (should-not (latex-to-svg-backend--texres-version texres))
+    (should (zerop (hash-table-count latex-to-svg-backend--texres-versions)))))
+
+(ert-deftest latex-to-svg-backend-tex-command-takes-arguments ()
+  ;; A TeX program is a name or a list of the program and its first
+  ;; arguments; as in TeX, `-progname=NAME' names the `.fmt' file.
+  (let ((latex-to-svg-backend-latex-program "latex"))
+    (should (equal (latex-to-svg-backend--tex-command) '("latex")))
+    (should (equal (latex-to-svg-backend--latex-format-name) "latex"))
+    (should (equal (latex-to-svg-backend--latex-format-name "/a/pdflatex")
+                   "pdflatex"))
+    (should (equal (latex-to-svg-backend--latex-format-name
+                    '("/a/texres" "-progname=pdflatex"))
+                   "pdflatex"))
+    ;; The key of the default program is a string's, as before.
+    (should (equal (latex-to-svg-backend--format-key "p")
+                   (secure-hash 'sha1 "p\0latex")))
+    (should-not (equal (latex-to-svg-backend--format-key "p" '("/a/texres"))
+                       (latex-to-svg-backend--format-key "p" "/a/texres")))))
+
 (ert-deftest latex-to-svg-backend-failure-warns-per-requesting-buffer ()
   ;; Two buffers wait on one compile: each is told, by name.  A killed one
   ;; is skipped, a quiet one is not told, and with no requesting buffer
@@ -2873,18 +2958,19 @@ and one in a formula's own black.")
     (should (eq (latex-to-svg-backend--engine 'texres) 'texres))))
 
 (ert-deftest latex-to-svg-backend-texres-compile-argv-and-store ()
-  ;; texres runs as `pdflatex' with the marker ink before the equation;
+  ;; texres runs as `pdflatex', through `-progname', with the marker ink
+  ;; before the equation;
   ;; `pdftocairo -svg -noshrink' converts the PDF; the SVG is stored
   ;; cropped, with the marker as `currentColor' and the formula's own
   ;; black kept.
   (latex-to-svg-backend-tests--with-fake-processes
     (let* ((latex-to-svg-backend-pdftocairo-program "pdftocairo-direct")
-           (link (expand-file-name "texres/pdflatex" l2s-test-cache-dir))
+           (command (list "/bin/texres" "-progname=pdflatex"))
            (doc "$x^2$")
            (key (latex-to-svg-backend--cache-key doc 'texres))
            (callbacks 0))
-      (cl-letf (((symbol-function 'latex-to-svg-backend--texres-link)
-                 (lambda () link)))
+      (cl-letf (((symbol-function 'latex-to-svg-backend--texres-command)
+                 (lambda () command)))
         (latex-to-svg-backend--enqueue
          key doc (latex-to-svg-backend--waiter (lambda (_outcome) (cl-incf callbacks)))
          nil 'texres)
@@ -2894,8 +2980,9 @@ and one in a formula's own black.")
                (pdf (expand-file-name "equation.pdf" scratch))
                (cairo (expand-file-name "cairo.svg" scratch)))
           (should (equal (plist-get (aref tex-process 3) :command)
-                         (list link "-interaction=nonstopmode"
-                               "-halt-on-error" "equation.tex")))
+                         (append command
+                                 (list "-interaction=nonstopmode"
+                                       "-halt-on-error" "equation.tex"))))
           (should (string-search
                    (concat "\\begin{document}\n"
                            latex-to-svg-backend--texres-ink
@@ -3788,6 +3875,26 @@ OUTPUT dump.fmt\n" root base sty outside)))
             (should-not (file-exists-p
                          (expand-file-name "abc.fls" (latex-to-svg-backend--fmt-dir))))))
       (delete-file binary)
+      (delete-directory latex-to-svg-backend-cache-directory t))))
+
+(ert-deftest latex-to-svg-backend-build-format-passes-the-arguments ()
+  ;; A TeX program with arguments dumps with them first, from the `.fmt'
+  ;; file its `-progname' names.
+  (let* ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-dump" t))
+         (latex-to-svg-backend--format-stamps (make-hash-table :test 'equal))
+         (inhibit-message t)
+         program argv)
+    (unwind-protect
+        (cl-letf (((symbol-function 'call-process)
+                   (lambda (prog _infile _buffer _display &rest args)
+                     (setq program prog argv args)
+                     1)))
+          (should-not (latex-to-svg-backend--build-format
+                       "abc" "\\documentclass{article}"
+                       '("/a/texres" "-progname=pdflatex")))
+          (should (equal program "/a/texres"))
+          (should (equal (car argv) "-progname=pdflatex"))
+          (should (member "&pdflatex" argv)))
       (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (ert-deftest latex-to-svg-backend-format-use-bumps-its-mtime ()
