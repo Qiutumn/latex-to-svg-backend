@@ -234,9 +234,18 @@ The current buffer must be the one that requested the work.  Code run
 from a process sentinel finds it in the waiters (see
 `latex-to-svg-backend--warn-waiters'); code run for a killed buffer
 shows nothing (see `latex-to-svg-backend--orphaned')."
-  (unless (or latex-to-svg-backend--orphaned
-              (member cause latex-to-svg-backend--warned))
-    (push cause latex-to-svg-backend--warned)
+  (unless (member cause latex-to-svg-backend--warned)
+    (when (latex-to-svg-backend--warn-always message)
+      (push cause latex-to-svg-backend--warned)
+      t)))
+
+(defun latex-to-svg-backend--warn-always (message)
+  "Show MESSAGE as a warning naming the current buffer, and mark nothing.
+For a warning that is to be shown each time its cause happens.  As for
+`latex-to-svg-backend--warn', the current buffer must be the one that
+requested the work, and code run for a killed buffer shows nothing.
+Return non-nil when the warning was shown."
+  (unless latex-to-svg-backend--orphaned
     (display-warning 'latex-to-svg-backend
                      (format "%s: %s" (buffer-name) message)
                      :warning)
@@ -1230,25 +1239,27 @@ stored."
             (latex-to-svg-backend--engine-name engine))))
 
 (cl-defun latex-to-svg-backend--failure
-    (kind engine &key message line column key program)
+    (kind engine &key message line column key log program)
   "Return the plist that describes a request that ended without a picture.
 That is (:kind KIND :engine ENGINE :message MESSAGE :line LINE :column
 COLUMN :log LOG :program PROGRAM).  KIND is `formula' when ENGINE
 rejected the equation, which is recorded, and `setup' otherwise: a
-missing program, a crash, no SVG support.  ENGINE is the engine that
-failed, nil meaning `latex'.  MESSAGE is one line, for a tooltip.  LINE
-\(1-based) and COLUMN (0-based) locate the error in the LaTeX string the
-caller passed, or are nil.  LOG is the log saved for the equation of
-KEY (see `latex-to-svg-backend--log-file'), or nil when there is none.
-PROGRAM is the program that was not found, for a `setup' failure."
+missing program, a crash, no SVG support, a preamble that failed to
+dump.  ENGINE is the engine that failed, nil meaning `latex'.  MESSAGE
+is one line, for a tooltip.  LINE \(1-based) and COLUMN (0-based)
+locate the error in the LaTeX string the caller passed, or are nil.
+LOG is the log saved for the equation of KEY (see
+`latex-to-svg-backend--log-file'), unless LOG is given, or nil when
+there is none.  PROGRAM is the program that was not found, for a
+`setup' failure."
   (list :kind kind
         :engine (or engine 'latex)
         :message message
         :line line
         :column column
-        :log (when key
-               (let ((log (latex-to-svg-backend--log-file key)))
-                 (and (file-exists-p log) log)))
+        :log (let ((log (or log
+                            (and key (latex-to-svg-backend--log-file key)))))
+               (and log (file-exists-p log) log))
         :program program))
 
 (defun latex-to-svg-backend--record-failure (key failure)
@@ -1403,8 +1414,8 @@ and, when the formula was at fault, its `.eld' failure record.")
   "Extensions of the files a `.fmt' entry can have, the leading one first.
 A `.fmt' entry is the files in `fmt/' named after one key of
 `latex-to-svg-backend--format-key': a dump that succeeded leaves the
-`.fmt' file and its `.eld' stamp; a dump that failed leaves only its
-`.log'.")
+`.fmt' file and its `.eld' stamp; a dump that failed leaves its `.eld'
+stamp, marked failed, and its `.log'.")
 
 (defun latex-to-svg-backend--entry-lead (file &optional extensions)
   "Return the file that dates the cache entry FILE belongs to, or nil.
@@ -1528,8 +1539,8 @@ is compiled again the next time it is needed.
 A precompiled `.fmt' file, with its stamp, older than the same age
 is deleted too: its mtime is bumped on every compile that loads it
 \(see `latex-to-svg-backend--touch-format'), and one still wanted is
-dumped again on the next compile.  So is the log of a dump that
-failed.
+dumped again on the next compile.  So are the stamp and the log of a
+dump that failed, dated by the stamp.
 
 A compile's scratch directory older than a day, left by an Emacs that
 stopped during the compile, is deleted too, also when

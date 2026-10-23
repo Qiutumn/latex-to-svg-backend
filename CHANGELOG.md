@@ -15,8 +15,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version from `texres --version`, once per session and again after
   texres changes. The `.fmt` file of texres is dumped once more, since
   its key names the program.
+- A failed dump of the `.fmt` file no longer turns precompiling off for
+  the rest of the session. The dump writes its stamp, marked failed, and
+  keeps its log; the preamble is dumped again once a file the stamp
+  names changes: an edit of a file listed in
+  `latex-to-svg-backend-preamble-package-files`, or an update of TeX. A
+  change to the preamble options dumps a new `.fmt` file, as before.
+  Until then no equation is compiled with that preamble, and the
+  callback of each request gets a `setup` failure whose `:log` is the
+  dump's log. Each failed dump warns, naming the log; before, the
+  warning came once per buffer, and each equation then compiled with the
+  full preamble and failed with its own log.
+  `latex-to-svg-backend-invalidate-format` and
+  `latex-to-svg-backend-flush-format` delete a failed stamp, so the next
+  compile dumps again.
+- Macro files go in `latex-to-svg-backend-preamble-packages`, with their
+  names in `latex-to-svg-backend-preamble-package-files`. An edit of one
+  dumps the `.fmt` file again. `latex-to-svg-backend-preamble-not-precompiled`
+  is the option again, no longer an obsolete alias: LaTeX code written
+  into every compile and not dumped, for a package that cannot be
+  dumped. Its files are listed in
+  `latex-to-svg-backend-preamble-not-precompiled-files`.
 
 ### Deprecated
+
+- `latex-to-svg-backend-preamble-macros`, an obsolete alias of
+  `latex-to-svg-backend-preamble-not-precompiled`, and
+  `latex-to-svg-backend-preamble-macro-files`, an obsolete alias of
+  `latex-to-svg-backend-preamble-not-precompiled-files`. Both still work,
+  also from a `.dir-locals.el`, and setting one before the backend loads
+  shows a warning.
 
 - texres 0.7.7 and older, which run one `pdflatex` pass only when
   called by that name. The backend still runs them through the link,
