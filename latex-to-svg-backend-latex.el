@@ -498,6 +498,13 @@ The stamp names the files FORMAT-FILE was dumped from (see
 `latex-to-svg-backend--format-stamp')."
   (concat (file-name-sans-extension format-file) ".eld"))
 
+(defun latex-to-svg-backend--format-log-file (format-file)
+  "Return the path of the log of the dump of FORMAT-FILE.
+TeX writes it next to FORMAT-FILE; the dump keeps it when it fails (see
+`latex-to-svg-backend--build-format'), as a failed compile keeps the
+equation's (see `latex-to-svg-backend--log-file')."
+  (concat (file-name-sans-extension format-file) ".log"))
+
 (defun latex-to-svg-backend--file-stamp (file)
   "Return (NAME . MTIME) for FILE, or nil when it does not exist.
 NAME is FILE with the symbolic links of its last component followed
@@ -557,14 +564,14 @@ distributions.  A file in no such tree adds nothing."
     (nreverse indexes)))
 
 (defun latex-to-svg-backend--format-stamp (binary &optional inputs
-                                                   package-files log)
+                                                   package-files failed)
   "Return the stamp of a `.fmt' file dumped by the LaTeX BINARY.
 INPUTS are the files the dump read (see
 `latex-to-svg-backend--recorded-inputs'), and PACKAGE-FILES the stamps
 of `latex-to-svg-backend-preamble-package-files' (see
-`latex-to-svg-backend--preamble-files').  LOG non-nil says the dump
-failed, and is its log.  The stamp is a plist whose values, but the
-last, are (NAME . MTIME) pairs (see
+`latex-to-svg-backend--preamble-files').  FAILED non-nil says the dump
+failed.  The stamp is a plist whose values, but the last, are (NAME .
+MTIME) pairs (see
 `latex-to-svg-backend--file-stamp'):
 
   :binary     BINARY.  An upgrade of TeX replaces the binary, which
@@ -578,11 +585,13 @@ last, are (NAME . MTIME) pairs (see
               changes when a package is updated.
   :preamble-package-files
               a list, PACKAGE-FILES.
-  :failed     LOG.
+  :failed     t.
 
 The second and third are missing without INPUTS, the fourth without
-PACKAGE-FILES, the last without LOG.  A dump that failed has no `.fmt'
-file, and its stamp is checked as one that succeeded (see
+PACKAGE-FILES, the last without FAILED.  As in the failure record of an
+equation, the log is not named: it is found from the stamp's name (see
+`latex-to-svg-backend--format-log-file').  A dump that failed has no
+`.fmt' file, and its stamp is checked as one that succeeded (see
 `latex-to-svg-backend--format-fresh-p'): the preamble is dumped again
 once a file the stamp names has changed."
   (let ((base (seq-find (lambda (file) (string-suffix-p ".fmt" file))
@@ -598,8 +607,8 @@ once a file the stamp names has changed."
               (list :ls-r indexes))
             (when package-files
               (list :preamble-package-files package-files))
-            (when log
-              (list :failed log)))))
+            (when failed
+              (list :failed t)))))
 
 (defun latex-to-svg-backend--read-format-stamp (format-file)
   "Return the stamp of FORMAT-FILE, or nil when it cannot be read.
@@ -638,16 +647,16 @@ is dumped again once; so is a `.fmt' file with no stamp."
 (defun latex-to-svg-backend--write-format-stamp (format-file binary
                                                              &optional inputs
                                                              package-files
-                                                             log)
+                                                             failed)
   "Write the stamp of FORMAT-FILE, dumped by BINARY, and return it.
-INPUTS, PACKAGE-FILES and LOG are as for
+INPUTS, PACKAGE-FILES and FAILED are as for
 `latex-to-svg-backend--format-stamp'.  A stamp that cannot be written
 is reported once per buffer (see `latex-to-svg-backend--warn'); the
 stamp still serves this session, and the preamble is dumped again in
 the next."
   (let ((file (latex-to-svg-backend--format-stamp-file format-file))
         (stamp (latex-to-svg-backend--format-stamp
-                binary inputs package-files log)))
+                binary inputs package-files failed)))
     (condition-case err
         (with-temp-file file
           (prin1 stamp (current-buffer)))
@@ -712,7 +721,7 @@ cannot be started is reported once per buffer (see
          (base (expand-file-name fkey dir))
          (fmt (concat base ".fmt"))
          (pre-tex (concat base ".tex"))
-         (log (concat base ".log"))
+         (log (latex-to-svg-backend--format-log-file fmt))
          (fls (concat base ".fls"))
          (buffer (get-buffer-create "*latex-to-svg-backend-precompile-log*")))
     (with-current-buffer buffer (erase-buffer))
@@ -764,7 +773,7 @@ M-x customize-group RET latex-to-svg-backend."
                           fmt binary
                           (latex-to-svg-backend--recorded-inputs fls)
                           package-files
-                          (unless dumped log))
+                          (not dumped))
                          latex-to-svg-backend--format-stamps)))
             (cond
              (dumped fmt)
@@ -809,9 +818,9 @@ edit of one of PACKAGE-FILES.  Bumps
 the mtime of the `.fmt' file it returns (see
 `latex-to-svg-backend--touch-format').
 
-Returns (failed . LOG) when the dump failed, LOG being its log: from
-the dump it runs, or from the stamp of an earlier one that failed,
-while that stamp is fresh.  The caller then compiles nothing (see
+Returns (failed . LOG) when the dump failed, LOG being its log (see
+`latex-to-svg-backend--format-log-file'): the dump it runs, or an
+earlier one whose stamp is fresh.  The caller then compiles nothing (see
 `latex-to-svg-backend--format-failed').  Returns nil, so the caller
 uses a full compile, when precompilation is off or PROGRAM cannot be
 started.  When PROGRAM is not found, it returns nil and writes no
@@ -831,7 +840,7 @@ once PROGRAM is installed."
                         stamp latex-bin package-files))))
       (cond
        ((and failed fresh)
-        (cons 'failed failed))
+        (cons 'failed (latex-to-svg-backend--format-log-file fmt)))
        ((and (not failed) (file-exists-p fmt) (or (null latex-bin) fresh))
         (latex-to-svg-backend--touch-format fmt))
        (t
