@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-10-25
+
+### Added (Qiutumn fork)
+
+- Optional local MathJax 4.1.3 engine (`:engine 'mathjax`) using Node.js,
+  with inline/display TeX, standalone SVG, font metrics, theme tinting,
+  asynchronous compilation, independent caching and LaTeX fallback.
+- A pinned npm lockfile, helper CLI, MathJax macros option and regression
+  tests. Install the optional JavaScript dependencies with `npm ci`.
+
 ## [0.18.0] - 2026-10-23
 
 ### Changed

@@ -1,0 +1,10 @@
+{
+  "name": "latex-to-svg-backend-mathjax",
+  "version": "0.18.1",
+  "private": true,
+  "description": "Optional local MathJax SVG engine for latex-to-svg-backend",
+  "license": "GPL-3.0-or-later",
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test tests/mathjax.test.cjs" },
+  "dependencies": { "@mathjax/src": "4.1.3" }
+}

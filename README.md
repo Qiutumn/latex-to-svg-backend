@@ -1,5 +1,54 @@
 # latex-to-svg-backend
 
+## MathJax support in this fork
+
+This fork adds the optional `mathjax` engine. Install Node.js 20 or newer,
+clone this repository, and run `npm ci --ignore-scripts` in the checkout.
+Add the checkout to Emacs's `load-path` and restart Emacs if an older backend
+is already loaded. Keep `mathjax-render.cjs` beside its `node_modules`.
+The pinned MathJax 4.1.3 and fonts run locally; rendering requires no network,
+browser, TeX installation, or global npm package.
+
+```elisp
+(require 'latex-to-svg-backend)
+(latex-to-svg-backend "\\(x^2 + y^2\\)"
+                      :engine 'mathjax
+                      :callback (lambda (failure)
+                                  (when failure (message "%S" failure))))
+```
+
+The usual async callback, cache, color, x-height, padding, cancellation,
+failure and invalidation APIs apply. A caller re-queries after a successful
+callback to obtain an image, supplying its normal size/color context.
+`:fallback 'latex` retries unsupported formulas with LaTeX; it requires
+`latex` and `dvisvgm`. MathJax has no LaTeX compile metadata sidecar.
+
+| Option | Default | Purpose |
+| --- | --- | --- |
+| `latex-to-svg-backend-mathjax-program` | `"node"` | Node executable; an absolute Windows path with spaces works. |
+| `latex-to-svg-backend-mathjax-script` | `mathjax-render.cjs` beside the Lisp file | Helper in a full checkout with npm dependencies installed. |
+| `latex-to-svg-backend-mathjax-macros` | `""` | TeX macro definitions prepended to each formula and included in its cache key. |
+
+Outer `\(…\)` / `$…$` select inline style; `\[…\]` / `$$…$$` select
+display style. Bare math is display style. Newlines and comments are preserved.
+The helper loads base, AMS, newcommand, configmacros, color, mathtools,
+boldsymbol, braket, cancel, enclose and textmacros. It reads no LaTeX preamble
+or package files, and does not enable `\require` or extension autoloading.
+Dynamic font data loads from the installed local MathJax font package.
+
+SVGs include paths, the required styles, x-height and inline baseline metadata.
+Their default ink is `currentColor`, so the shared display code can tint and
+scale them without rerunning Node. Explicit formula colors are preserved.
+Each cold formula starts a Node process; warm equations use the shared cache.
+Formula errors are cached and can trigger fallback. Missing dependencies,
+invalid helper input and I/O errors remain retryable setup failures, with logs.
+
+Run `npm test` for real CLI rendering tests. Run the ERT suite as documented
+below; set `L2S_MATHJAX_TEST=1` to include the real Node/Emacs integration test.
+The helper and npm files must be retained when packaging this fork; for an
+Elisp-only installation, point `latex-to-svg-backend-mathjax-script` to a full
+checkout with the npm dependencies installed.
+
 ![Made for GNU Emacs](https://img.shields.io/badge/Made%20for-GNU%20Emacs-7F5AB6?logo=gnuemacs&logoColor=white)
 [![MELPA](https://melpa.org/packages/latex-to-svg-backend-badge.svg)](https://melpa.org/#/latex-to-svg-backend)
 [![MELPA Stable](https://stable.melpa.org/packages/latex-to-svg-backend-badge.svg)](https://stable.melpa.org/#/latex-to-svg-backend)

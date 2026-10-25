@@ -6,7 +6,7 @@
 ;; Maintainer: Andrea Alberti <a.alberti82@gmail.com>
 ;; Assisted-by: Claude:claude-opus-4-8
 ;; URL: https://github.com/alberti42/latex-to-svg-backend
-;; Version: 0.18.0
+;; Version: 0.18.1
 ;; Package-Requires: ((emacs "29.1"))
 ;; Keywords: tex, math, images
 
@@ -120,11 +120,12 @@
 (require 'latex-to-svg-backend-core)
 (require 'latex-to-svg-backend-latex)
 (require 'latex-to-svg-backend-ratex)
+(require 'latex-to-svg-backend-mathjax)
 (require 'latex-to-svg-backend-texres)
 
 ;;;; Version
 
-(defconst latex-to-svg-backend-version "0.18.0"
+(defconst latex-to-svg-backend-version "0.18.1"
   "The version of the loaded backend, as in the `Version:' header.
 A front-end compares it with `version<=' to check that the backend it
 loaded has what it needs.")
@@ -132,26 +133,28 @@ loaded has what it needs.")
 ;;;; Engine
 
 (defun latex-to-svg-backend--engine (engine)
-  "Return ENGINE as `latex', `ratex' or `texres'; nil is `latex'.
+  "Return ENGINE as `latex', `ratex', `texres' or `mathjax'; nil is `latex'.
 Signals an error for any other value: a misspelt engine is a caller
 bug, and quietly falling back to LaTeX would hide it."
   (pcase engine
     ('nil 'latex)
-    ((or 'latex 'ratex 'texres) engine)
-    (_ (error "Unknown engine %S: want `latex', `ratex', `texres' or nil"
+    ((or 'latex 'ratex 'texres 'mathjax) engine)
+    (_ (error "Unknown engine %S: want `latex', `ratex', `texres', `mathjax' or nil"
               engine))))
 
 ;;;; Capability
 
 (defun latex-to-svg-backend-tools-available-p (&optional engine)
   "Return non-nil when the programs of ENGINE are found.
-ENGINE is `latex' (the default, also nil), `ratex' or `texres', as for
-`latex-to-svg-backend'.  The programs are looked up on the variable
+ENGINE is `latex' (the default, also nil), `ratex', `texres' or `mathjax'.
+The programs are looked up on the variable
 `exec-path': `latex' and `dvisvgm' for the LaTeX engine, `render-svg'
-for the RaTeX one, `texres' and `pdftocairo' for the texres one."
+for RaTeX, `texres' and `pdftocairo' for texres, Node.js and the local
+helper for MathJax.  MathJax's npm dependencies are checked by the helper."
   (pcase (latex-to-svg-backend--engine engine)
     ('latex (latex-to-svg-backend--latex-tools-available-p))
     ('ratex (latex-to-svg-backend--ratex-tools-available-p))
+    ('mathjax (latex-to-svg-backend--mathjax-tools-available-p))
     ('texres (latex-to-svg-backend--texres-tools-available-p))))
 
 ;;;; State
@@ -194,19 +197,21 @@ by which it is sized.")
 (defun latex-to-svg-backend--inputs ()
   "Return what the engines read from the current buffer, as a plist.
 That is `latex-to-svg-backend--latex-inputs', which the texres engine
-reads too, and `latex-to-svg-backend--ratex-inputs' together.
+reads too, `latex-to-svg-backend--ratex-inputs' and
+`latex-to-svg-backend--mathjax-inputs' together.
 `latex-to-svg-backend' reads it once, in the requesting buffer, and
 passes it to the cache key, the compile and the fallback: a compile may
 start from another compile's sentinel, and the fallback from its own,
 where the current buffer is another."
   (append (latex-to-svg-backend--latex-inputs)
-          (latex-to-svg-backend--ratex-inputs)))
+          (latex-to-svg-backend--ratex-inputs)
+          (latex-to-svg-backend--mathjax-inputs)))
 
 (defun latex-to-svg-backend--cache-key (latex &optional engine inputs)
   "Return a stable content cache key for LATEX rendered by ENGINE.
-ENGINE is `latex' (the default, also nil), `ratex' or `texres'; the
-caller has checked it (see `latex-to-svg-backend--engine').  INPUTS is the plist
-of `latex-to-svg-backend--inputs', nil meaning the current buffer's.
+ENGINE is `latex' (the default, also nil), `ratex', `texres' or `mathjax'.
+The caller has checked it (see `latex-to-svg-backend--engine').  INPUTS is
+the plist of `latex-to-svg-backend--inputs', nil for the current buffer's.
 The engine's input besides LATEX is folded in so changing it
 invalidates the cache: the preamble and the macros text for
 the LaTeX engine (see `latex-to-svg-backend--latex-cache-salt'; without
@@ -230,6 +235,9 @@ display time), so neither size nor color is part of this key."
                                ('ratex
                                 (latex-to-svg-backend--ratex-cache-salt
                                  (or inputs (latex-to-svg-backend--ratex-inputs))))
+                               ('mathjax
+                                (latex-to-svg-backend--mathjax-cache-salt
+                                 (or inputs (latex-to-svg-backend--mathjax-inputs))))
                                ('texres
                                 (latex-to-svg-backend--texres-cache-salt
                                  (or inputs (latex-to-svg-backend--latex-inputs))))))))
@@ -241,10 +249,11 @@ display time), so neither size nor color is part of this key."
 
 KEY identifies the equation; WAITER is what to notify (see
 `latex-to-svg-backend--waiter').  LATEX is forwarded to the compile of
-ENGINE (`latex', the default, also nil, `ratex' or `texres'):
+ENGINE (`latex', the default, also nil, `ratex', `texres' or `mathjax'):
 `latex-to-svg-backend--compile' or `latex-to-svg-backend--texres-compile',
 along with METADATA (the INITIAL value for the `.eld' sidecar), or
-`latex-to-svg-backend--ratex-compile', which writes no sidecar; all
+`latex-to-svg-backend--ratex-compile' or
+`latex-to-svg-backend--mathjax-compile', which write no sidecar; all
 along with INPUTS (as for
 `latex-to-svg-backend--cache-key').
 Multiple waiters sharing KEY (the same equation requested more than
@@ -271,6 +280,8 @@ INPUTS does not hold; when it was killed, the compile reports nothing
               (latex-to-svg-backend--compile key latex metadata inputs))
              ('ratex
               (latex-to-svg-backend--ratex-compile key latex inputs))
+             ('mathjax
+              (latex-to-svg-backend--mathjax-compile key latex inputs))
              ('texres
               (latex-to-svg-backend--texres-compile
                key latex metadata inputs)))))
@@ -404,7 +415,10 @@ program and no TeX installation, for the math KaTeX supports and no
 packages.  `texres' runs the `pdflatex' of texres, then `pdftocairo'
 \(options in the `latex-to-svg-backend-texres' group): full LaTeX with
 the LaTeX engine's preamble, from one program instead of a TeX
-installation.  Any other value signals an error.  The engine is part
+installation.  `mathjax' runs the bundled Node.js helper, using local
+MathJax npm dependencies and `latex-to-svg-backend-mathjax-macros',
+without a TeX installation or LaTeX preamble.  Any other value signals
+an error.  The engine is part
 of the cache key, so each engine's SVGs stay cached when a caller
 switches to another.  As for COLOR, a front-end owns the user
 preference and passes it here.
@@ -694,7 +708,7 @@ buffer; this takes it from a caller that computed it elsewhere."
   "Return cached compile metadata for LATEX rendered by ENGINE, or nil.
 ENGINE is as for `latex-to-svg-backend'.  Only the LaTeX engine
 and the texres engine write metadata, so this is always nil for
-`ratex'.
+`ratex' or `mathjax'.
 
 Returns the plist `(:nums (INITIAL . FINAL))' read from LATEX's
 `.eld' sidecar: INITIAL is the caller's `:metadata' at render time and

@@ -50,7 +50,8 @@ jobs:
           emacs -Q -batch -L . --eval '(setq byte-compile-error-on-warn t)' \
             -f batch-byte-compile latex-to-svg-backend-core.el \
             latex-to-svg-backend-latex.el latex-to-svg-backend-ratex.el \
-            latex-to-svg-backend-texres.el latex-to-svg-backend.el \
+            latex-to-svg-backend-texres.el latex-to-svg-backend-mathjax.el \
+            latex-to-svg-backend.el \
             tests/latex-to-svg-backend-tests.el
 
       # Docstring conventions, exiting non-zero on any finding: `checkdoc-file'
@@ -70,6 +71,7 @@ jobs:
                                   "latex-to-svg-backend-latex.el"
                                   "latex-to-svg-backend-ratex.el"
                                   "latex-to-svg-backend-texres.el"
+                                  "latex-to-svg-backend-mathjax.el"
                                   "latex-to-svg-backend.el")))
               (checkdoc-file file))
             (if (get-buffer "*Warnings*")
@@ -80,6 +82,28 @@ jobs:
         run: |
           emacs -Q -batch -l ert -l tests/latex-to-svg-backend-tests.el \
             -f ert-run-tests-batch-and-exit
+
+  mathjax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    name: Local MathJax CLI and Emacs integration
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '30.2'
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - name: Real Node and Emacs integration
+        env:
+          L2S_MATHJAX_TEST: '1'
+        run: |
+          emacs -Q -batch -L . -l tests/latex-to-svg-backend-tests.el \
+            --eval '(ert-run-tests-batch-and-exit "mathjax")'
 
   render:
     runs-on: ubuntu-latest

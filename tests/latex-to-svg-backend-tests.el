@@ -1841,10 +1841,10 @@ Return the SVG path."
 (ert-deftest latex-to-svg-backend-unknown-engine-signals ()
   ;; A misspelt engine is reported, not quietly replaced by a default, by
   ;; every public function that takes one.
-  (should-error (latex-to-svg-backend "$x$" :engine 'mathjax))
-  (should-error (latex-to-svg-backend-tools-available-p 'mathjax))
-  (should-error (latex-to-svg-backend-invalidate "$x$" 'mathjax))
-  (should-error (latex-to-svg-backend-metadata "$x$" 'mathjax)))
+  (should-error (latex-to-svg-backend "$x$" :engine 'unknown-engine))
+  (should-error (latex-to-svg-backend-tools-available-p 'unknown-engine))
+  (should-error (latex-to-svg-backend-invalidate "$x$" 'unknown-engine))
+  (should-error (latex-to-svg-backend-metadata "$x$" 'unknown-engine)))
 
 (ert-deftest latex-to-svg-backend-tools-available-p-follows-engine ()
   ;; Each engine is available when its own programs are found.
@@ -4253,6 +4253,97 @@ OUTPUT dump.fmt\n" root base sty outside)))
                                   (latex-to-svg-backend--cache-key doc))))
       (should (equal (mapcar (lambda (o) (plist-get o :engine)) outcomes)
                      '(latex))))))
+
+(ert-deftest latex-to-svg-backend-mathjax-formula-and-cache ()
+  (should (equal (latex-to-svg-backend--mathjax-formula
+                  "\\(x % comment\n+y\\)" "\\def\\R{R}% macro")
+                 '("\\def\\R{R}% macro\nx % comment\n+y" . t)))
+  (should (equal (latex-to-svg-backend--mathjax-formula "$$x$$" "")
+                 '("\nx")))
+  (should (eq (latex-to-svg-backend--engine 'mathjax) 'mathjax))
+  (let* ((latex-to-svg-backend-mathjax-macros "")
+         (key (latex-to-svg-backend--cache-key "$x$" 'mathjax))
+         (inputs (latex-to-svg-backend--inputs)))
+    (dolist (engine '(latex ratex texres))
+      (should-not (equal key (latex-to-svg-backend--cache-key "$x$" engine))))
+    (let ((latex-to-svg-backend-mathjax-macros "\\def\\R{R}"))
+      (should-not (equal key (latex-to-svg-backend--cache-key "$x$" 'mathjax)))
+      (should (equal key (latex-to-svg-backend--cache-key "$x$" 'mathjax inputs))))))
+
+(ert-deftest latex-to-svg-backend-mathjax-falls-back-and-caches ()
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((doc "$\\SI{3}{m}$") (callbacks 0))
+      (latex-to-svg-backend doc :engine 'mathjax :fallback 'latex
+                            :x-height 10 :color "#000000"
+                            :callback (lambda (_) (cl-incf callbacks)))
+      (let* ((process (car l2s-test-processes))
+             (args (plist-get (aref process 3) :command))
+             (request (json-read-file (nth 2 args))))
+        (should (equal (car args) latex-to-svg-backend-mathjax-program))
+        (should (equal (alist-get 'tex request) "\n\\SI{3}{m}"))
+        (should (eq (alist-get 'display request) json-false))
+        (latex-to-svg-backend-tests--finish-fake-process
+         process 2 "MATHJAX_FORMULA_ERROR: Undefined control sequence \\SI\n"))
+      (should (= 2 (length l2s-test-processes)))
+      (latex-to-svg-backend-tests--succeed-latex
+       (car l2s-test-processes) (lambda () (car l2s-test-processes)))
+      (should (= 1 callbacks))
+      (should (eq 'image (latex-to-svg-backend
+                         doc :engine 'mathjax :fallback 'latex
+                         :x-height 10 :color "#000000")))
+      (should (eq 'latex (latex-to-svg-backend-engine-used doc 'mathjax 'latex)))
+      (should (= 3 (length l2s-test-processes)))
+      (should (eq 'formula (plist-get (latex-to-svg-backend-failure doc 'mathjax)
+                                      :kind)))
+      (latex-to-svg-backend-invalidate doc 'mathjax)
+      (should-not (latex-to-svg-backend-failure doc 'mathjax)))))
+
+(ert-deftest latex-to-svg-backend-mathjax-setup-error-is-retryable ()
+  (latex-to-svg-backend-tests--with-public-api
+    (let ((outcome nil) (doc "$x$"))
+      (latex-to-svg-backend doc :engine 'mathjax :fallback 'latex
+                            :callback (lambda (value) (setq outcome value)))
+      (latex-to-svg-backend-tests--finish-fake-process
+       (car l2s-test-processes) 1 "MATHJAX_SETUP_ERROR: Run npm ci\n")
+      (should (eq (plist-get outcome :kind) 'setup))
+      (should-not (latex-to-svg-backend-failure doc 'mathjax))
+      (should (= 1 (length l2s-test-processes)))
+      (latex-to-svg-backend doc :engine 'mathjax :callback #'ignore)
+      (should (= 2 (length l2s-test-processes))))))
+
+(ert-deftest latex-to-svg-backend-mathjax-end-to-end ()
+  ;; Opt in explicitly; the dedicated CI job installs Node and runs this.
+  (skip-unless (getenv "L2S_MATHJAX_TEST"))
+  (let ((latex-to-svg-backend-cache-directory (make-temp-file "l2s-mathjax-" t))
+        (latex-to-svg-backend-mathjax-macros "\\newcommand{\\R}{\\mathbb{R}}"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'latex-to-svg-backend-available-p) #'always))
+          (dolist (doc '("$y+\\R$" "\\[\\frac{1}{2}\\]" "$\\notARealCommand$"))
+            (let ((done 'pending))
+              (latex-to-svg-backend doc :engine 'mathjax :quiet t
+                                    :callback (lambda (value) (setq done (or value t))))
+              (let ((deadline (+ (float-time) 30)))
+                (while (and (eq done 'pending) (< (float-time) deadline))
+                  (accept-process-output nil 0.1)))
+              (if (string-match-p "notARealCommand" doc)
+                  (progn
+                    (should (eq (plist-get done :kind) 'formula))
+                    (should (latex-to-svg-backend-failure doc 'mathjax)))
+                (should (eq done t))
+                (let* ((file (latex-to-svg-backend--svg-file
+                              (latex-to-svg-backend--cache-key doc 'mathjax)))
+                       (svg (with-temp-buffer
+                              (insert-file-contents file) (buffer-string))))
+                  (should (latex-to-svg-backend--svg-geometry svg))
+                  (should (= 4.42 (latex-to-svg-backend--svg-x-height svg)))
+                  (should (equal (latex-to-svg-backend--svg-baseline svg)
+                                 (and (string-prefix-p "$" doc) 0.0)))
+                  (should (eq 'mathjax (latex-to-svg-backend-engine-used doc 'mathjax)))
+                  ;; A second request must use the cache, even if Node vanishes.
+                  (cl-letf (((symbol-function 'latex-to-svg-backend--mathjax-compile)
+                             (lambda (&rest _) (error "Cache miss"))))
+                    (latex-to-svg-backend doc :engine 'mathjax)))))))
+      (delete-directory latex-to-svg-backend-cache-directory t))))
 
 (provide 'latex-to-svg-backend-tests)
 

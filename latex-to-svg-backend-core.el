@@ -1114,10 +1114,11 @@ the slot."
 ;;;; Compile outcome
 
 (defun latex-to-svg-backend--engine-name (engine)
-  "Return the name of ENGINE (`latex', nil, `ratex' or `texres') for a message."
+  "Return the display name of ENGINE for a message."
   (pcase-exhaustive engine
     ((or 'nil 'latex) "LaTeX")
     ('ratex "RaTeX")
+    ('mathjax "MathJax")
     ('texres "texres")))
 
 (defun latex-to-svg-backend--call-back (callback outcome)
